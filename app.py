@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import sys
 from pathlib import Path
 
@@ -10,9 +11,19 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from analysis.roster_grader import grade_roster
-from analysis.trade_finder import CORE_POS, find_trade_targets
-from analysis.waiver_finder import find_waiver_pickups
+# Streamlit often re-runs app.py without reloading analysis/* after edits —
+# force-reload so new kwargs (e.g. hunt_positions) always match.
+from analysis import roster_grader, trade_finder, waiver_finder
+
+roster_grader = importlib.reload(roster_grader)
+trade_finder = importlib.reload(trade_finder)
+waiver_finder = importlib.reload(waiver_finder)
+
+grade_roster = roster_grader.grade_roster
+CORE_POS = trade_finder.CORE_POS
+find_trade_targets = trade_finder.find_trade_targets
+find_waiver_pickups = waiver_finder.find_waiver_pickups
+
 from ingestion.espn_adapter import espn_configured, load_config
 from ingestion.refresh import fetch_league
 from storage.db import init_db, load_dashboard, upsert_league_snapshot
