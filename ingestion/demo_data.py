@@ -78,20 +78,37 @@ DEMO_PAYLOAD = {
 }
 
 
+def _assign_lineup(players_chunk: list[dict]) -> list[tuple[dict, str, str]]:
+    """Map players to lineup slots that match their positions (starter vs bench)."""
+    needs = {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "DST": 1, "K": 1}
+    filled = {pos: 0 for pos in needs}
+    flex_left = 1
+    assigned: list[tuple[dict, str, str]] = []
+
+    for player in players_chunk:
+        pos = player["position"]
+        if pos in needs and filled[pos] < needs[pos]:
+            filled[pos] += 1
+            assigned.append((player, "starter", pos))
+        elif pos in {"RB", "WR", "TE"} and flex_left > 0:
+            flex_left -= 1
+            assigned.append((player, "starter", "FLEX"))
+        else:
+            assigned.append((player, "bench", "BE"))
+    return assigned
+
+
 def build_demo_payload() -> dict:
     """Expand compact demo into full roster/standings/matchup snapshot."""
     payload = {**DEMO_PAYLOAD, "rosters": [], "standings": [], "matchups": []}
     teams = payload["team_names"]
     players = payload["players"]
 
-    # Assign ~8 players per first 5 teams from the pool (enough for a readable demo).
-    starter_slots = ["QB", "RB", "RB", "WR", "WR", "TE", "FLEX", "DST", "K"]
+    # First 5 teams get 8-player chunks with position-correct lineup slots.
     for ti, team in enumerate(teams[:5]):
         team_id = f"t{ti + 1}"
         chunk = players[ti * 8 : (ti + 1) * 8]
-        for pi, player in enumerate(chunk):
-            slot = "starter" if pi < 7 else "bench"
-            lineup = starter_slots[pi] if pi < len(starter_slots) else player["position"]
+        for player, slot, lineup in _assign_lineup(chunk):
             payload["rosters"].append(
                 {
                     "team_id": team_id,
