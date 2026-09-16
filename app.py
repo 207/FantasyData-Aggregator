@@ -11,7 +11,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from analysis.roster_grader import grade_roster
-from analysis.trade_finder import find_trade_targets
+from analysis.trade_finder import ALL_HUNT_POS, CORE_POS, find_trade_targets
 from analysis.waiver_finder import find_waiver_pickups
 from ingestion.espn_adapter import espn_configured, load_config
 from ingestion.refresh import fetch_league
@@ -225,9 +225,10 @@ def main() -> None:
 
     with tab_trades:
         st.markdown(
-            "Targets who upgrade **RB / WR / TE** (Weak, then Average for FLEX depth). "
-            "QB / DST / K only when that slot is a clear hole and the target is elite. "
-            "Prefers counterparts with surplus; includes an offer hint from your Strong spots."
+            "Pick positions to **hunt** (default RB / WR / TE). Suggestions prefer "
+            "counterparties who are **Weak where you have surplus**, so you can fill "
+            "*their* hole while upgrading the slots you selected — even if you already "
+            "grade Strong there. Readable why text below the table."
         )
         if not team_names:
             st.info("Pick a team after data loads.")
@@ -237,67 +238,87 @@ def main() -> None:
             trade_team = st.selectbox(
                 "Your team", team_names, index=default_idx, key="trade_team"
             )
-            trades = find_trade_targets(
-                trade_team, rosters, players, consensus_for_grade, limit=12
+            trade_hunt = st.multiselect(
+                "Hunt positions",
+                options=list(ALL_HUNT_POS),
+                default=list(CORE_POS),
+                key="trade_hunt_pos",
+                help="Default is all skill (RB/WR/TE). Add QB/DST/K only if you want those upgrades.",
             )
-            if not trades:
-                st.info(
-                    "No clear trade upgrades found. Your weak spots may already be "
-                    "competitive, or counterparts lack ranked surplus."
-                )
+            if not trade_hunt:
+                st.info("Select at least one hunt position.")
             else:
-                summary = pd.DataFrame(
-                    [
-                        {
-                            "Player": t["player"],
-                            "Pos": t["position"],
-                            "Owner": t["owner"],
-                            "Rank": t["rank"],
-                            "Your best": (
-                                f"{t['your_best']} #{t['your_best_rank']}"
-                                if t.get("your_best_rank") is not None
-                                else "—"
-                            ),
-                            "Owner depth": t["owner_depth"],
-                            "Offer hint": t.get("offer_hint") or "—",
-                        }
-                        for t in trades
-                    ]
+                trades = find_trade_targets(
+                    trade_team,
+                    rosters,
+                    players,
+                    consensus_for_grade,
+                    limit=12,
+                    hunt_positions=trade_hunt,
                 )
-                # Wide Offer hint + taller rows so long cells are reachable via
-                # horizontal/vertical dataframe scroll (not clipped mid-sentence).
-                st.dataframe(
-                    summary,
-                    hide_index=True,
-                    width="stretch",
-                    height=min(420, 56 + 68 * max(len(summary), 1)),
-                    row_height=68,
-                    column_config={
-                        "Player": st.column_config.Column(width="medium"),
-                        "Pos": st.column_config.Column(width="small"),
-                        "Owner": st.column_config.Column(width="medium"),
-                        "Rank": st.column_config.NumberColumn(width="small"),
-                        "Your best": st.column_config.Column(width="medium"),
-                        "Owner depth": st.column_config.NumberColumn(width="small"),
-                        "Offer hint": st.column_config.TextColumn(
-                            "Offer hint",
-                            width=560,
-                            help="Suggested surplus piece to offer — scroll sideways if truncated.",
-                        ),
-                    },
-                )
-                st.markdown("##### Why")
-                for t in trades:
-                    why = (t.get("why") or "").strip() or "—"
-                    st.markdown(
-                        f"**{t['player']} ({t['position']}) — {t['owner']}.** {why}"
+                if not trades:
+                    st.info(
+                        "No ranked upgrades at the selected positions. "
+                        "Try widening the hunt list, or counterparts may lack surplus."
                     )
+                else:
+                    summary = pd.DataFrame(
+                        [
+                            {
+                                "Player": t["player"],
+                                "Pos": t["position"],
+                                "Owner": t["owner"],
+                                "Rank": t["rank"],
+                                "Your best": (
+                                    f"{t['your_best']} #{t['your_best_rank']}"
+                                    if t.get("your_best_rank") is not None
+                                    else "—"
+                                ),
+                                "Their needs": t.get("their_needs") or "—",
+                                "Owner depth": t["owner_depth"],
+                                "Offer hint": t.get("offer_hint") or "—",
+                            }
+                            for t in trades
+                        ]
+                    )
+                    # Wide Offer hint + taller rows so long cells are reachable via
+                    # horizontal/vertical dataframe scroll (not clipped mid-sentence).
+                    st.dataframe(
+                        summary,
+                        hide_index=True,
+                        width="stretch",
+                        height=min(420, 56 + 68 * max(len(summary), 1)),
+                        row_height=68,
+                        column_config={
+                            "Player": st.column_config.Column(width="medium"),
+                            "Pos": st.column_config.Column(width="small"),
+                            "Owner": st.column_config.Column(width="medium"),
+                            "Rank": st.column_config.NumberColumn(width="small"),
+                            "Your best": st.column_config.Column(width="medium"),
+                            "Their needs": st.column_config.Column(
+                                width="medium",
+                                help="Positions where this owner is Weak/Average and you have Strong surplus.",
+                            ),
+                            "Owner depth": st.column_config.NumberColumn(width="small"),
+                            "Offer hint": st.column_config.TextColumn(
+                                "Offer hint",
+                                width=560,
+                                help="Suggested surplus piece to offer — scroll sideways if truncated.",
+                            ),
+                        },
+                    )
+                    st.markdown("##### Why")
+                    for t in trades:
+                        why = (t.get("why") or "").strip() or "—"
+                        st.markdown(
+                            f"**{t['player']} ({t['position']}) — {t['owner']}.** {why}"
+                        )
 
     with tab_waivers:
         st.markdown(
-            "Free agents who help weak/average positions, ranked by consensus. "
-            "Sleeper trending adds get a boost. Explicit ESPN/demo FA pool is merged "
-            "with unrostered consensus names."
+            "Pick positions to shop on waivers (default RB / WR / TE). Free agents are "
+            "filtered to those slots and ranked by consensus; Sleeper trending adds get a "
+            "boost. Works even when your roster already grades Strong at the hunt position."
         )
         if not team_names:
             st.info("Pick a team after data loads.")
@@ -307,49 +328,60 @@ def main() -> None:
             waiver_team = st.selectbox(
                 "Your team", team_names, index=default_idx, key="waiver_team"
             )
-            pickups = find_waiver_pickups(
-                waiver_team,
-                rosters,
-                players,
-                consensus_for_grade,
-                free_agents=free_agents,
-                trending_names=trending,
-                limit=15,
+            waiver_hunt = st.multiselect(
+                "Hunt positions",
+                options=list(ALL_HUNT_POS),
+                default=list(CORE_POS),
+                key="waiver_hunt_pos",
+                help="Default is all skill (RB/WR/TE).",
             )
-            if trending:
-                st.caption(
-                    "Sleeper trending: "
-                    + ", ".join(trending[:12])
-                    + ("…" if len(trending) > 12 else "")
-                )
-            if not pickups:
-                st.info(
-                    "No ranked free-agent upgrades for your weak spots right now. "
-                    "Try Refresh Data after waivers process."
-                )
+            if not waiver_hunt:
+                st.info("Select at least one hunt position.")
             else:
-                summary = pd.DataFrame(
-                    [
-                        {
-                            "Player": p["player"],
-                            "Pos": p["position"],
-                            "NFL": p.get("nfl_team") or "—",
-                            "Rank": p["rank"],
-                            "Your best": (
-                                f"{p['your_best']} #{p['your_best_rank']}"
-                                if p.get("your_best_rank") is not None
-                                else "—"
-                            ),
-                            "Trending": "Yes" if p.get("trending") else "—",
-                        }
-                        for p in pickups
-                    ]
+                pickups = find_waiver_pickups(
+                    waiver_team,
+                    rosters,
+                    players,
+                    consensus_for_grade,
+                    free_agents=free_agents,
+                    trending_names=trending,
+                    limit=15,
+                    hunt_positions=waiver_hunt,
                 )
-                st.dataframe(summary, use_container_width=True, hide_index=True)
-                st.markdown("##### Why")
-                for p in pickups:
-                    why = (p.get("why") or "").strip() or "—"
-                    st.markdown(f"**{p['player']} ({p['position']}).** {why}")
+                if trending:
+                    st.caption(
+                        "Sleeper trending: "
+                        + ", ".join(trending[:12])
+                        + ("…" if len(trending) > 12 else "")
+                    )
+                if not pickups:
+                    st.info(
+                        "No ranked free-agent upgrades at the selected positions. "
+                        "Try Refresh Data after waivers process, or widen the hunt list."
+                    )
+                else:
+                    summary = pd.DataFrame(
+                        [
+                            {
+                                "Player": p["player"],
+                                "Pos": p["position"],
+                                "NFL": p.get("nfl_team") or "—",
+                                "Rank": p["rank"],
+                                "Your best": (
+                                    f"{p['your_best']} #{p['your_best_rank']}"
+                                    if p.get("your_best_rank") is not None
+                                    else "—"
+                                ),
+                                "Trending": "Yes" if p.get("trending") else "—",
+                            }
+                            for p in pickups
+                        ]
+                    )
+                    st.dataframe(summary, use_container_width=True, hide_index=True)
+                    st.markdown("##### Why")
+                    for p in pickups:
+                        why = (p.get("why") or "").strip() or "—"
+                        st.markdown(f"**{p['player']} ({p['position']}).** {why}")
 
     with tab_ranks:
         st.markdown("Consensus board (FantasyPros weighted with Sleeper search ranks).")

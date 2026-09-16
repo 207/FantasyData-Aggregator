@@ -105,13 +105,14 @@ Storing week-by-week snapshots (rather than overwriting) lets you later chart tr
 3. Output a per-position grade (e.g. "RB: Strong — 2 top-24 backs", "TE: Weak — starter ranked TE28").
 
 **Trade targets**
-- Identify your weakest 1–2 positions.
-- Cross-reference other rosters in the league (ESPN exposes all teams' rosters) for players who are strong at a position where *they're* deep and you're not — classic "sell high on their surplus" logic.
-- Rank candidates by rest-of-season projection delta vs. your current starter.
+- UI multi-select of hunt positions (default RB/WR/TE — “all skill”); not limited to where *you* grade Weak.
+- Cross-reference other rosters for upgrades at those positions.
+- Prefer counterparties who are Weak/Average at positions where *you* have Strong surplus — fill *their* hole while taking *their* good player at your hunt slot.
+- Rank candidates by counterparty need-fit + consensus rank delta vs your current best.
 
 **Waiver pickups**
-- Pull the free-agent pool from ESPN.
-- Filter by your weak positions.
+- Pull the free-agent pool from ESPN (+ unrostered consensus names).
+- Filter by user-selected hunt positions (same default as trades).
 - Cross-reference Sleeper trending-adds and FantasyPros rankings to surface undervalued/rising players.
 - Flag injury-driven opportunities from news adapter output.
 

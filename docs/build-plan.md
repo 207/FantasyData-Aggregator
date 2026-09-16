@@ -34,6 +34,13 @@ End-to-end local app:
 - UI: **Trade targets** and **Waiver pickups** tabs with full readable “why” (same pattern as grades)
 - Demo FA pool + mock ranks for offline recommendations
 
+## Phase 3.1 — shipped (position hunt + counterparty-first)
+
+- **Hunt positions** multi-select on Trade targets + Waiver pickups (default RB/WR/TE)
+- Trades no longer require your hunt position to be Weak — shop upgrades even when Strong
+- Matchmaking prioritizes owners who are Weak/Average where *you* have Strong surplus (“fill their hole”)
+- Waivers filter strictly by selected positions; why text reflects hunt + counterparty strategy
+
 ## Stack
 
 | Layer | Choice |

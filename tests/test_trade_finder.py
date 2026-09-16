@@ -206,6 +206,163 @@ def test_clear_qb_hole_can_still_surface_elite_qb():
     assert "clear hole" in qb_hits[0]["why"].lower() or "Streaming slot" in qb_hits[0]["why"]
 
 
+def test_hunt_positions_ignore_own_strong_grade():
+    """User can hunt RB upgrades even when RB grades Strong (no auto Weak requirement)."""
+    players = {
+        "my_qb": _player("my_qb", "My QB", "QB"),
+        "my_rb1": _player("my_rb1", "My RB1", "RB"),
+        "my_rb2": _player("my_rb2", "My RB2", "RB"),
+        "my_wr1": _player("my_wr1", "My WR1", "WR"),
+        "my_wr2": _player("my_wr2", "My WR2", "WR"),
+        "my_wr3": _player("my_wr3", "Surplus WR", "WR"),
+        "my_te": _player("my_te", "My TE", "TE"),
+        "my_dst": _player("my_dst", "My DST", "DST"),
+        "my_k": _player("my_k", "My K", "K"),
+        "their_rb1": _player("their_rb1", "Elite RB", "RB"),
+        "their_rb2": _player("their_rb2", "Bench RB", "RB"),
+        "their_wr": _player("their_wr", "Weak WR", "WR"),
+        "their_qb": _player("their_qb", "Their QB", "QB"),
+        "their_te": _player("their_te", "Their TE", "TE"),
+        "their_dst": _player("their_dst", "Their DST", "DST"),
+        "their_k": _player("their_k", "Their K", "K"),
+    }
+    rosters = [_row("Me", pid) for pid in players if pid.startswith("my_")] + [
+        _row("Them", pid) for pid in players if pid.startswith("their_")
+    ]
+    consensus = [
+        _rank("My QB", "QB", 8),
+        _rank("My RB1", "RB", 6),  # Strong RB
+        _rank("My RB2", "RB", 18),
+        _rank("My WR1", "WR", 5),
+        _rank("My WR2", "WR", 20),
+        _rank("Surplus WR", "WR", 35),
+        _rank("My TE", "TE", 6),
+        _rank("My DST", "DST", 6),
+        _rank("My K", "K", 5),
+        _rank("Elite RB", "RB", 2),
+        _rank("Bench RB", "RB", 40),
+        _rank("Weak WR", "WR", 45),  # Them Weak at WR — we have surplus
+        _rank("Their QB", "QB", 10),
+        _rank("Their TE", "TE", 10),
+        _rank("Their DST", "DST", 10),
+        _rank("Their K", "K", 10),
+    ]
+    # Auto mode with all Strong skill may return little; explicit hunt must work.
+    trades = find_trade_targets(
+        "Me", rosters, players, consensus, limit=8, hunt_positions=["RB", "WR", "TE"]
+    )
+    assert any(t["player"] == "Elite RB" for t in trades), trades
+    hit = next(t for t in trades if t["player"] == "Elite RB")
+    assert "Hunting RB" in hit["why"]
+    assert "Strong" in hit["why"]
+    assert hit.get("their_needs") and "WR" in hit["their_needs"]
+    assert "Offer surplus WR" in (hit.get("offer_hint") or "")
+
+
+def test_counterparty_need_ranked_above_no_fit():
+    """Owners who need our surplus outrank owners who don't, same hunt target quality."""
+    players = {
+        "my_wr1": _player("my_wr1", "My WR1", "WR"),
+        "my_wr2": _player("my_wr2", "My WR2", "WR"),
+        "my_wr3": _player("my_wr3", "My WR3", "WR"),
+        "my_rb": _player("my_rb", "My RB", "RB"),
+        "my_te": _player("my_te", "My TE", "TE"),
+        "my_qb": _player("my_qb", "My QB", "QB"),
+        "my_dst": _player("my_dst", "My DST", "DST"),
+        "my_k": _player("my_k", "My K", "K"),
+        "fit_rb1": _player("fit_rb1", "Fit RB", "RB"),
+        "fit_rb2": _player("fit_rb2", "Fit RB2", "RB"),
+        "fit_wr": _player("fit_wr", "Fit Weak WR", "WR"),
+        "fit_qb": _player("fit_qb", "Fit QB", "QB"),
+        "fit_te": _player("fit_te", "Fit TE", "TE"),
+        "fit_dst": _player("fit_dst", "Fit DST", "DST"),
+        "fit_k": _player("fit_k", "Fit K", "K"),
+        "nofit_rb1": _player("nofit_rb1", "NoFit RB", "RB"),
+        "nofit_rb2": _player("nofit_rb2", "NoFit RB2", "RB"),
+        "nofit_wr1": _player("nofit_wr1", "NoFit WR1", "WR"),
+        "nofit_wr2": _player("nofit_wr2", "NoFit WR2", "WR"),
+        "nofit_qb": _player("nofit_qb", "NoFit QB", "QB"),
+        "nofit_te": _player("nofit_te", "NoFit TE", "TE"),
+        "nofit_dst": _player("nofit_dst", "NoFit DST", "DST"),
+        "nofit_k": _player("nofit_k", "NoFit K", "K"),
+    }
+    rosters = [_row("Me", pid) for pid in players if pid.startswith("my_")] + [
+        _row("FitTeam", pid) for pid in players if pid.startswith("fit_")
+    ] + [_row("NoFit", pid) for pid in players if pid.startswith("nofit_")]
+    consensus = [
+        _rank("My WR1", "WR", 4),
+        _rank("My WR2", "WR", 12),
+        _rank("My WR3", "WR", 30),
+        _rank("My RB", "RB", 22),
+        _rank("My TE", "TE", 10),
+        _rank("My QB", "QB", 10),
+        _rank("My DST", "DST", 8),
+        _rank("My K", "K", 8),
+        _rank("Fit RB", "RB", 8),
+        _rank("Fit RB2", "RB", 35),
+        _rank("Fit Weak WR", "WR", 50),
+        _rank("Fit QB", "QB", 10),
+        _rank("Fit TE", "TE", 10),
+        _rank("Fit DST", "DST", 10),
+        _rank("Fit K", "K", 10),
+        _rank("NoFit RB", "RB", 7),  # slightly better rank but no WR need
+        _rank("NoFit RB2", "RB", 36),
+        _rank("NoFit WR1", "WR", 5),
+        _rank("NoFit WR2", "WR", 18),
+        _rank("NoFit QB", "QB", 8),
+        _rank("NoFit TE", "TE", 6),
+        _rank("NoFit DST", "DST", 5),
+        _rank("NoFit K", "K", 5),
+    ]
+    trades = find_trade_targets(
+        "Me", rosters, players, consensus, limit=6, hunt_positions=["RB"]
+    )
+    assert trades, trades
+    # FitTeam should beat NoFit because we can fill their WR hole.
+    assert trades[0]["owner"] == "FitTeam", trades
+    assert "WR" in (trades[0].get("their_needs") or "")
+
+
+def test_waiver_respects_hunt_positions():
+    from analysis.waiver_finder import find_waiver_pickups
+
+    players = {
+        "my_rb": _player("my_rb", "My RB", "RB"),
+        "my_wr": _player("my_wr", "My WR", "WR"),
+        "my_te": _player("my_te", "My TE", "TE"),
+        "my_qb": _player("my_qb", "My QB", "QB"),
+    }
+    rosters = [_row("Me", pid) for pid in players]
+    consensus = [
+        _rank("My RB", "RB", 8),
+        _rank("My WR", "WR", 8),
+        _rank("My TE", "TE", 18),
+        _rank("My QB", "QB", 8),
+        _rank("FA RB", "RB", 15),
+        _rank("FA WR", "WR", 12),
+        _rank("FA TE", "TE", 9),
+        _rank("FA QB", "QB", 3),
+    ]
+    # Only TE should appear when hunting TE — even though QB FA is elite.
+    pickups = find_waiver_pickups(
+        "Me",
+        rosters,
+        players,
+        consensus,
+        free_agents=[
+            {"name": "FA RB", "position": "RB"},
+            {"name": "FA WR", "position": "WR"},
+            {"name": "FA TE", "position": "TE"},
+            {"name": "FA QB", "position": "QB"},
+        ],
+        limit=10,
+        hunt_positions=["TE"],
+    )
+    assert pickups
+    assert all(p["position"] == "TE" for p in pickups), pickups
+    assert "Hunting TE" in pickups[0]["why"]
+
+
 if __name__ == "__main__":
     for _name, _fn in sorted(globals().items()):
         if _name.startswith("test_") and callable(_fn):

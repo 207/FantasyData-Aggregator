@@ -1,11 +1,16 @@
 from __future__ import annotations
 
-"""Recommend waiver / free-agent pickups for weak roster spots."""
+"""Recommend waiver / free-agent pickups for selected hunt positions."""
 
-from typing import Any
+from typing import Any, Sequence
 
 from analysis.roster_grader import REPLACEMENT_RANK, grade_roster
-from analysis.trade_finder import CORE_POS, CORE_POS_SET, _is_stream_hole
+from analysis.trade_finder import (
+    CORE_POS,
+    CORE_POS_SET,
+    _is_stream_hole,
+    _normalize_hunt_positions,
+)
 from ingestion.consensus import index_rankings_by_name, normalize_player_name
 from ingestion.positions import normalize_position
 
@@ -13,7 +18,7 @@ SKILL_POS = {"QB", "RB", "WR", "TE", "DST", "K"}
 
 
 def _waiver_need_positions(grades: list[dict]) -> list[str]:
-    """Skill positions first; QB/DST/K only when a clear hole (waive streamers, don't chase QB14)."""
+    """Auto fallback: skill positions first; QB/DST/K only for clear holes."""
     by_pos = {g["position"]: g for g in grades}
     needs: list[str] = []
     for pos in CORE_POS:
@@ -149,18 +154,27 @@ def find_waiver_pickups(
     free_agents: list[dict[str, Any]] | None = None,
     trending_names: list[str] | None = None,
     limit: int = 15,
+    hunt_positions: Sequence[str] | None = None,
 ) -> list[dict[str, Any]]:
     """
-    Rank free agents that help weak (then average) positions.
+    Rank free agents at selected hunt positions (default RB/WR/TE).
 
-    Boosts Sleeper trending adds. Each row includes a full-sentence `why`.
+    When `hunt_positions` is set, filter strictly to those slots — even if you
+    already grade Strong there (still allow upgrades / depth). Auto mode falls
+    back to weak/average skill needs. Boosts Sleeper trending adds.
     """
     consensus = consensus_rankings or []
     rank_index = index_rankings_by_name(consensus)
     grades = grade_roster(team_name, rosters, players, consensus)
-    priority = _waiver_need_positions(grades)
     weak = {g["position"] for g in grades if g["grade"] == "Weak"}
     average = {g["position"] for g in grades if g["grade"] == "Average"}
+    grades_by_pos = {g["position"]: g for g in grades}
+
+    explicit = hunt_positions is not None
+    if explicit:
+        priority = _normalize_hunt_positions(hunt_positions)
+    else:
+        priority = _waiver_need_positions(grades)
     if not priority:
         priority = list(CORE_POS)
 
@@ -195,23 +209,41 @@ def find_waiver_pickups(
             normalize_player_name(fa["name"], None) in trending_keys
         )
 
-        # Skip FAs who don't improve you (unless trending and near replacement).
+        # Skip FAs who don't improve your best (unless trending near replacement).
         if ours is not None and rank >= ours and not (trending and rank <= repl * 1.5):
             continue
         if ours is None and rank > repl * 1.5 and not trending:
             continue
 
-        grade_label = "Weak" if pos in weak else ("Average" if pos in average else "ok")
+        your_grade = grades_by_pos.get(pos, {}).get("grade", "—")
+        if pos in weak:
+            grade_label = "Weak"
+        elif pos in average:
+            grade_label = "Average"
+        else:
+            grade_label = your_grade or "Strong"
+
+        if explicit:
+            lead = f"Hunting {pos} (selected"
+            if grade_label == "Strong":
+                lead += "; roster already Strong — shopping upgrades/depth"
+            else:
+                lead += f"; grades {grade_label}"
+            lead += "). "
+        else:
+            lead = f"Auto need at {pos} ({grade_label}). "
+
         if ours is None:
             why = (
-                f"Your {pos} grades {grade_label} with no ranked starter; "
+                f"{lead}"
                 f"{fa['name']} is a free agent at consensus #{int(rank)} "
                 f"(replacement ~#{int(repl)})."
             )
         else:
             delta = int(ours - rank)
             why = (
-                f"Your {pos} grades {grade_label} (best: {our_name} #{int(ours)}); "
+                f"{lead}"
+                f"Your best: {our_name} #{int(ours)}; "
                 f"{fa['name']} is FA consensus #{int(rank)}"
                 + (f" — {delta} spots better." if delta > 0 else ".")
             )
@@ -223,8 +255,8 @@ def find_waiver_pickups(
         # Lower rank is better; prioritize earlier need slots and trending.
         pri = priority.index(pos) if pos in priority else 99
         core_boost = 8 if pos in CORE_POS_SET else 0
-        score = rank + pri * 5 - (8 if trending else 0) - (5 if pos in weak else 0) - core_boost
-
+        # Mild Weak boost — hunt selection is the primary filter now.
+        score = rank + pri * 5 - (8 if trending else 0) - (2 if pos in weak else 0) - core_boost
 
         scored.append(
             {
