@@ -120,6 +120,28 @@ def fetch_espn_league(cfg: dict[str, str] | None = None) -> dict[str, Any]:
         scoreboard_status = "error"
         scoreboard_msg = f"Matchups unavailable: {exc}"
 
+    free_agents: list[dict] = []
+    fa_status, fa_msg = "ok", ""
+    try:
+        fa_list = league.free_agents(size=80) or []
+        for player in fa_list:
+            pid = str(getattr(player, "playerId", None) or getattr(player, "id", player.name))
+            pos = normalize_position(getattr(player, "position", "") or "")
+            nfl = getattr(player, "proTeam", "") or getattr(player, "pro_team", "") or ""
+            entry = {
+                "player_id": pid,
+                "name": player.name,
+                "position": pos,
+                "nfl_team": nfl,
+            }
+            free_agents.append(entry)
+            # Keep FA in the global player map so name→id joins still work.
+            players.setdefault(pid, entry)
+        fa_msg = f"Loaded {len(free_agents)} free agents."
+    except Exception as exc:  # noqa: BLE001 — degrade gracefully
+        fa_status = "error"
+        fa_msg = f"Free agents unavailable: {exc}"
+
     settings = getattr(league, "settings", None)
     scoring = {}
     roster_slots = {}
@@ -144,6 +166,7 @@ def fetch_espn_league(cfg: dict[str, str] | None = None) -> dict[str, Any]:
         "rosters": rosters,
         "standings": standings,
         "matchups": matchups,
+        "free_agents": free_agents,
         "refresh_logs": [
             {
                 "source": "espn",
@@ -151,6 +174,7 @@ def fetch_espn_league(cfg: dict[str, str] | None = None) -> dict[str, Any]:
                 "message": f"Synced {len(team_names)} teams, {len(players)} players.",
             },
             {"source": "espn_matchups", "status": scoreboard_status, "message": scoreboard_msg},
+            {"source": "espn_free_agents", "status": fa_status, "message": fa_msg},
         ],
     }
 

@@ -17,7 +17,7 @@ End-to-end local app:
 - Manual **Refresh Data** that reloads adapters and rewrites SQLite
 - D/ST position normalization (`D/ST` → `DST`) so defense grades correctly
 
-## Phase 2 — shipped (this slice)
+## Phase 2 — shipped
 
 - FantasyPros adapter (live scrape + mock fallback)
 - Sleeper adapter (public search-rank board + trending adds log)
@@ -25,6 +25,14 @@ End-to-end local app:
 - Positional roster grades vs replacement level (depth fallback if ranks missing)
 - UI: **Consensus ranks** tab + richer grade “why”
 - Config: `RANKINGS_MODE`, `SLEEPER_ENABLED`, `FANTASYPROS_RANKINGS_URL`
+
+## Phase 3 — shipped (this slice)
+
+- Trade target finder: upgrades for Weak/Average positions from other rosters, preferring surplus depth + optional offer hint from your Strong spots
+- Waiver finder: ESPN/demo free-agent pool merged with unrostered consensus names; Sleeper trending boost
+- Free agents + trending persisted on league meta (`free_agents_json`, `trending_json`)
+- UI: **Trade targets** and **Waiver pickups** tabs with full readable “why” (same pattern as grades)
+- Demo FA pool + mock ranks for offline recommendations
 
 ## Stack
 
@@ -39,5 +47,4 @@ End-to-end local app:
 
 ## Next steps
 
-1. **Phase 3** — Trade targets and waiver pickup recommendations with explainable “why”
-2. **Phase 4** — News/injury flags, historical charts, optional weekly auto-refresh
+1. **Phase 4** — News/injury flags, historical charts, optional weekly auto-refresh

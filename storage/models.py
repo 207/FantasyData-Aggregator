@@ -92,6 +92,8 @@ class LeagueMeta(SQLModel, table=True):
     roster_slots: str = ""
     team_names: str = ""
     source_mode: str = "demo"  # demo | espn
+    free_agents_json: str = "[]"
+    trending_json: str = "[]"
     refreshed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 

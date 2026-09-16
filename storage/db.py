@@ -31,6 +31,7 @@ def init_db(engine=None) -> None:
     engine = engine or get_engine()
     SQLModel.metadata.create_all(engine)
     _ensure_ranking_columns(engine)
+    _ensure_league_meta_columns(engine)
 
 
 def _ensure_ranking_columns(engine) -> None:
@@ -44,6 +45,19 @@ def _ensure_ranking_columns(engine) -> None:
             conn.exec_driver_sql("ALTER TABLE rankings ADD COLUMN player_name VARCHAR DEFAULT ''")
         if "position" not in cols:
             conn.exec_driver_sql("ALTER TABLE rankings ADD COLUMN position VARCHAR DEFAULT ''")
+        conn.commit()
+
+
+def _ensure_league_meta_columns(engine) -> None:
+    with engine.connect() as conn:
+        rows = conn.exec_driver_sql("PRAGMA table_info(league_meta)").fetchall()
+        if not rows:
+            return
+        cols = {r[1] for r in rows}
+        if "free_agents_json" not in cols:
+            conn.exec_driver_sql("ALTER TABLE league_meta ADD COLUMN free_agents_json VARCHAR DEFAULT '[]'")
+        if "trending_json" not in cols:
+            conn.exec_driver_sql("ALTER TABLE league_meta ADD COLUMN trending_json VARCHAR DEFAULT '[]'")
         conn.commit()
 
 
@@ -78,6 +92,8 @@ def upsert_league_snapshot(payload: dict[str, Any], engine=None) -> LeagueMeta:
             roster_slots=json.dumps(payload.get("roster_slots", {})),
             team_names=json.dumps(payload.get("team_names", [])),
             source_mode=payload.get("source_mode", "demo"),
+            free_agents_json=json.dumps(payload.get("free_agents") or []),
+            trending_json=json.dumps(payload.get("trending") or []),
             refreshed_at=datetime.now(timezone.utc),
         )
         session.add(meta)
@@ -179,6 +195,19 @@ def load_dashboard(engine=None) -> dict[str, Any]:
         logs = session.exec(select(RefreshLog).order_by(RefreshLog.id.desc())).all()
         rankings = session.exec(select(Ranking)).all()
 
+        free_agents: list[dict] = []
+        trending: list[str] = []
+        fa_raw = getattr(meta, "free_agents_json", None) or "[]"
+        tr_raw = getattr(meta, "trending_json", None) or "[]"
+        try:
+            free_agents = json.loads(fa_raw) or []
+        except json.JSONDecodeError:
+            free_agents = []
+        try:
+            trending = json.loads(tr_raw) or []
+        except json.JSONDecodeError:
+            trending = []
+
         return {
             "meta": meta,
             "players": players,
@@ -187,4 +216,6 @@ def load_dashboard(engine=None) -> dict[str, Any]:
             "matchups": matchups,
             "logs": logs,
             "rankings": rankings,
+            "free_agents": free_agents,
+            "trending": trending,
         }

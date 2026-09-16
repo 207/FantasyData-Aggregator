@@ -63,6 +63,29 @@ DEMO_PAYLOAD = {
         {"player_id": "p38", "name": "Jake Elliott", "position": "K", "nfl_team": "PHI"},
         {"player_id": "p39", "name": "Lamar Jackson", "position": "QB", "nfl_team": "BAL"},
         {"player_id": "p40", "name": "Joe Mixon", "position": "RB", "nfl_team": "HOU"},
+        # Free agents (not assigned to any roster below)
+        {"player_id": "fa1", "name": "Isiah Pacheco", "position": "RB", "nfl_team": "KC"},
+        {"player_id": "fa2", "name": "Zack Moss", "position": "RB", "nfl_team": "CIN"},
+        {"player_id": "fa3", "name": "Courtland Sutton", "position": "WR", "nfl_team": "DEN"},
+        {"player_id": "fa4", "name": "Christian Kirk", "position": "WR", "nfl_team": "HOU"},
+        {"player_id": "fa5", "name": "Dallas Goedert", "position": "TE", "nfl_team": "PHI"},
+        {"player_id": "fa6", "name": "Baker Mayfield", "position": "QB", "nfl_team": "TB"},
+        {"player_id": "fa7", "name": "Steelers D/ST", "position": "DST", "nfl_team": "PIT"},
+        {"player_id": "fa8", "name": "Cairo Santos", "position": "K", "nfl_team": "CHI"},
+        {"player_id": "fa9", "name": "Jaylen Warren", "position": "RB", "nfl_team": "PIT"},
+        {"player_id": "fa10", "name": "Rome Odunze", "position": "WR", "nfl_team": "CHI"},
+    ],
+    "free_agents": [
+        {"player_id": "fa1", "name": "Isiah Pacheco", "position": "RB", "nfl_team": "KC"},
+        {"player_id": "fa2", "name": "Zack Moss", "position": "RB", "nfl_team": "CIN"},
+        {"player_id": "fa3", "name": "Courtland Sutton", "position": "WR", "nfl_team": "DEN"},
+        {"player_id": "fa4", "name": "Christian Kirk", "position": "WR", "nfl_team": "HOU"},
+        {"player_id": "fa5", "name": "Dallas Goedert", "position": "TE", "nfl_team": "PHI"},
+        {"player_id": "fa6", "name": "Baker Mayfield", "position": "QB", "nfl_team": "TB"},
+        {"player_id": "fa7", "name": "Steelers D/ST", "position": "DST", "nfl_team": "PIT"},
+        {"player_id": "fa8", "name": "Cairo Santos", "position": "K", "nfl_team": "CHI"},
+        {"player_id": "fa9", "name": "Jaylen Warren", "position": "RB", "nfl_team": "PIT"},
+        {"player_id": "fa10", "name": "Rome Odunze", "position": "WR", "nfl_team": "CHI"},
     ],
     "rosters": [],
     "standings": [],
@@ -74,6 +97,11 @@ DEMO_PAYLOAD = {
             "message": "Running in demo mode — add LEAGUE_ID, SWID, and ESPN_S2 to config/.env for live data.",
         },
         {"source": "demo", "status": "ok", "message": "Loaded sample 10-team PPR league for week 3."},
+        {
+            "source": "espn_free_agents",
+            "status": "ok",
+            "message": "Demo free-agent pool with 10 available players.",
+        },
     ],
 }
 
@@ -100,7 +128,13 @@ def _assign_lineup(players_chunk: list[dict]) -> list[tuple[dict, str, str]]:
 
 def build_demo_payload() -> dict:
     """Expand compact demo into full roster/standings/matchup snapshot."""
-    payload = {**DEMO_PAYLOAD, "rosters": [], "standings": [], "matchups": []}
+    payload = {
+        **DEMO_PAYLOAD,
+        "rosters": [],
+        "standings": [],
+        "matchups": [],
+        "free_agents": list(DEMO_PAYLOAD.get("free_agents") or []),
+    }
     teams = payload["team_names"]
     players = payload["players"]
 

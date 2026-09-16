@@ -1,18 +1,18 @@
 # FantasyAnalysis
 
-Local fantasy football analyzer for your ESPN league. Pulls roster, standings, matchups, and multi-source rankings into SQLite and surfaces them in a Streamlit dashboard with explainable positional grades.
+Local fantasy football analyzer for your ESPN league. Pulls roster, standings, matchups, and multi-source rankings into SQLite and surfaces them in a Streamlit dashboard with explainable grades, trade targets, and waiver pickups.
 
 Design: [`docs/fantasy-football-analyzer-design.md`](docs/fantasy-football-analyzer-design.md)  
 Build plan: [`docs/build-plan.md`](docs/build-plan.md)
 
-## What works now (Phase 1 + Phase 2)
+## What works now (Phase 1–3)
 
-- Streamlit UI: roster, standings, matchups, consensus positional grades, consensus ranks, source status
-- SQLite snapshots under `data/fantasy.db`
-- Live ESPN via `espn_api` when cookies are configured
+- Streamlit UI: roster, standings, matchups, positional grades, **trade targets**, **waiver pickups**, consensus ranks, source status
+- SQLite snapshots under `data/fantasy.db` (includes free-agent pool + Sleeper trending)
+- Live ESPN via `espn_api` when cookies are configured (rosters + free agents)
 - Demo league when ESPN credentials are missing
 - FantasyPros rankings (live scrape with mock fallback) + Sleeper search-rank board
-- Consensus ranks powering positional grades vs replacement level
+- Consensus ranks powering grades, trades, and waivers
 - Manual **Refresh Data** in the sidebar
 
 ## Run locally
@@ -45,12 +45,17 @@ Credentials stay on your machine and are only sent to ESPN.
 
 If FantasyPros HTML changes, refresh still succeeds with mock ranks and a `stale` status in **Source status**.
 
+### Recommendations
+
+- **Trade targets** — other managers’ players who upgrade your Weak/Average positions; prefers surplus depth and suggests an offer hint from your Strong spots.
+- **Waiver pickups** — ESPN/demo free agents plus unrostered consensus names; Sleeper trending adds are boosted. Full “why” text renders below each table (not clipped in cells).
+
 ## Project layout
 
 ```
 app.py                 # Streamlit entry
 ingestion/             # ESPN, FantasyPros, Sleeper, consensus, demo
-analysis/              # Roster grading (consensus + depth fallback)
+analysis/              # Roster grades, trade finder, waiver finder
 storage/               # SQLite models + persistence
 config/.env.example    # Credential + rankings template
 docs/                  # Design + build plan
@@ -58,4 +63,4 @@ docs/                  # Design + build plan
 
 ## Next
 
-Phase 3 adds trade targets and waiver recommendations with explainable “why”.
+Phase 4 adds news/injury flags, historical charts, and optional weekly auto-refresh.

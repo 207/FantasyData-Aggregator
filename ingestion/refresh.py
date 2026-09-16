@@ -52,6 +52,8 @@ def fetch_league(force_demo: bool = False) -> dict[str, Any]:
     payload["rankings"] = all_rows
     payload["consensus_rankings"] = [r for r in all_rows if r.get("source") == "consensus"]
     payload["trending"] = sl.get("trending") or []
+    # Demo/ESPN free agents stay on the league payload; also expose for UI.
+    payload.setdefault("free_agents", payload.get("free_agents") or [])
     payload["refresh_logs"] = logs
     if consensus:
         logs.append(
