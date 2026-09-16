@@ -263,7 +263,28 @@ def main() -> None:
                         for t in trades
                     ]
                 )
-                st.dataframe(summary, use_container_width=True, hide_index=True)
+                # Wide Offer hint + taller rows so long cells are reachable via
+                # horizontal/vertical dataframe scroll (not clipped mid-sentence).
+                st.dataframe(
+                    summary,
+                    hide_index=True,
+                    width="stretch",
+                    height=min(420, 56 + 68 * max(len(summary), 1)),
+                    row_height=68,
+                    column_config={
+                        "Player": st.column_config.Column(width="medium"),
+                        "Pos": st.column_config.Column(width="small"),
+                        "Owner": st.column_config.Column(width="medium"),
+                        "Rank": st.column_config.NumberColumn(width="small"),
+                        "Your best": st.column_config.Column(width="medium"),
+                        "Owner depth": st.column_config.NumberColumn(width="small"),
+                        "Offer hint": st.column_config.TextColumn(
+                            "Offer hint",
+                            width=560,
+                            help="Suggested surplus piece to offer — scroll sideways if truncated.",
+                        ),
+                    },
+                )
                 st.markdown("##### Why")
                 for t in trades:
                     why = (t.get("why") or "").strip() or "—"
