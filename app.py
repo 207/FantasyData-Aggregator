@@ -11,11 +11,15 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from analysis.roster_grader import grade_roster
-from analysis.trade_finder import ALL_HUNT_POS, CORE_POS, find_trade_targets
+from analysis.trade_finder import CORE_POS, find_trade_targets
 from analysis.waiver_finder import find_waiver_pickups
 from ingestion.espn_adapter import espn_configured, load_config
 from ingestion.refresh import fetch_league
 from storage.db import init_db, load_dashboard, upsert_league_snapshot
+
+# Keep UI options local so Streamlit hot-reload never races a stale trade_finder.
+HUNT_POS_OPTIONS = ("QB", "RB", "WR", "TE", "DST", "K")
+DEFAULT_HUNT_POS = tuple(CORE_POS)
 
 st.set_page_config(
     page_title="FantasyAnalysis",
@@ -240,8 +244,8 @@ def main() -> None:
             )
             trade_hunt = st.multiselect(
                 "Hunt positions",
-                options=list(ALL_HUNT_POS),
-                default=list(CORE_POS),
+                options=list(HUNT_POS_OPTIONS),
+                default=list(DEFAULT_HUNT_POS),
                 key="trade_hunt_pos",
                 help="Default is all skill (RB/WR/TE). Add QB/DST/K only if you want those upgrades.",
             )
@@ -330,8 +334,8 @@ def main() -> None:
             )
             waiver_hunt = st.multiselect(
                 "Hunt positions",
-                options=list(ALL_HUNT_POS),
-                default=list(CORE_POS),
+                options=list(HUNT_POS_OPTIONS),
+                default=list(DEFAULT_HUNT_POS),
                 key="waiver_hunt_pos",
                 help="Default is all skill (RB/WR/TE).",
             )
