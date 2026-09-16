@@ -185,22 +185,28 @@ def main() -> None:
         else:
             grade_team = st.selectbox("Grade team", team_names, index=default_idx, key="grade_team")
             grades = grade_roster(grade_team, rosters, players, consensus_for_grade)
-            gdf = pd.DataFrame(grades)
-            if not gdf.empty:
-                st.dataframe(
-                    gdf.rename(
-                        columns={
-                            "position": "Pos",
-                            "grade": "Grade",
-                            "count": "Count",
-                            "players": "Players",
-                            "best_rank": "Best rank",
-                            "why": "Why",
+            if not grades:
+                st.info("No positional grades for this team.")
+            else:
+                # Compact summary — long "why" text is clipped in st.dataframe cells,
+                # so full explanations render below as wrapped markdown.
+                summary = pd.DataFrame(
+                    [
+                        {
+                            "Pos": g["position"],
+                            "Grade": g["grade"],
+                            "Count": g["count"],
+                            "Best rank": g.get("best_rank") if g.get("best_rank") is not None else "—",
+                            "Players": g["players"],
                         }
-                    ),
-                    use_container_width=True,
-                    hide_index=True,
+                        for g in grades
+                    ]
                 )
+                st.dataframe(summary, use_container_width=True, hide_index=True)
+                st.markdown("##### Why")
+                for g in grades:
+                    why = (g.get("why") or "").strip() or "—"
+                    st.markdown(f"**{g['position']} — {g['grade']}.** {why}")
 
     with tab_ranks:
         st.markdown("Consensus board (FantasyPros weighted with Sleeper search ranks).")
