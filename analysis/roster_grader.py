@@ -18,6 +18,11 @@ REPLACEMENT_RANK = {
     "K": 12,
 }
 
+# QB/DST/K stay "Average" further past replacement — a QB14 like Purdy is
+# startable in 12-team, not a roster hole. Weak only when clearly below.
+STREAM_GRADE_POS = frozenset({"QB", "DST", "K"})
+STREAM_AVERAGE_FACTOR = 1.5  # e.g. QB Average through ~#18
+
 
 def _player_pos(player: Any, row: Any) -> str:
     pos = normalize_position(getattr(player, "position", None) or "")
@@ -76,6 +81,9 @@ def grade_roster(
 
             if best_rank <= repl * 0.5:
                 grade = "Strong"
+            elif pos in STREAM_GRADE_POS and best_rank <= repl * STREAM_AVERAGE_FACTOR:
+                # 12-team: QB13–18 / mid DST-K are startable streamers, not Weak holes.
+                grade = "Average"
             elif best_rank <= repl:
                 grade = "Average"
             else:
@@ -96,6 +104,15 @@ def grade_roster(
                     f"Best {pos}: {best_name} consensus #{int(best_rank)} "
                     f"(replacement ~#{repl}); {starters_above} at/above replacement."
                 )
+                if (
+                    pos in STREAM_GRADE_POS
+                    and grade == "Average"
+                    and best_rank > repl
+                ):
+                    why += (
+                        f" Startable in a typical 12-team league — not a trade hole "
+                        f"(Weak only past ~#{int(repl * STREAM_AVERAGE_FACTOR)})."
+                    )
         else:
             # Depth-only fallback
             if pos in {"QB", "TE", "DST", "K"}:

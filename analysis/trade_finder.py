@@ -18,13 +18,14 @@ CORE_POS_SET = frozenset(CORE_POS)
 STREAM_POS = frozenset({"QB", "DST", "K"})
 
 # Target must clear this rank to be a trade-worthy stream upgrade (not a lateral).
-STREAM_ELITE_RANK = {"QB": 8, "DST": 6, "K": 5}
+STREAM_ELITE_RANK = {"QB": 6, "DST": 5, "K": 4}
 
-# Own starter must be this far worse than replacement before we hunt stream trades.
-STREAM_HOLE_FACTOR = 1.25
+# Absolute "this is a real hole" floor in a 12-team league.
+# Purdy-tier QB14 is startable — never a trade need. Only chase when missing / QB18+.
+STREAM_HOLE_RANK = {"QB": 18, "DST": 16, "K": 16}
 
 # Minimum rank-spot gain to bother trading for a stream position.
-STREAM_MIN_DELTA = 5
+STREAM_MIN_DELTA = 6
 
 
 def _team_players(
@@ -88,21 +89,19 @@ def _pos_depth(team_name: str, pos: str, rosters: list[Any], players: dict[str, 
 
 
 def _is_stream_hole(grade: dict[str, Any]) -> bool:
-    """True when QB/DST/K is a real hole — not a barely-below-replacement streamer."""
+    """True when QB/DST/K is a real hole — not a startable mid-tier like Purdy QB14."""
     pos = grade.get("position")
     if pos not in STREAM_POS:
         return False
-    if grade.get("grade") != "Weak":
-        return False
-    repl = float(REPLACEMENT_RANK.get(pos, 12))
+    hole_at = float(STREAM_HOLE_RANK.get(pos, 18))
     best = grade.get("best_rank")
     if best is None:
-        # No ranked starter (or empty) — real hole.
-        return True
+        # Empty / unranked — only count as a hole when the grader already says Weak.
+        return grade.get("grade") == "Weak" or int(grade.get("count") or 0) == 0
     try:
-        return float(best) > repl * STREAM_HOLE_FACTOR
+        return float(best) > hole_at
     except (TypeError, ValueError):
-        return True
+        return grade.get("grade") == "Weak"
 
 
 def _trade_need_positions(grades: list[dict[str, Any]]) -> list[str]:
@@ -110,7 +109,7 @@ def _trade_need_positions(grades: list[dict[str, Any]]) -> list[str]:
     Ordered positions to shop for.
 
     Prefer RB/WR/TE (Weak then Average — covers FLEX depth). Only add QB/DST/K
-    when that slot is a clear hole; never let mild DST Weak drown out skill needs.
+    when that slot is a clear hole; never let mild DST/QB Weak drown out skill needs.
     """
     by_pos = {g["position"]: g for g in grades}
     needs: list[str] = []
@@ -135,8 +134,12 @@ def _trade_need_positions(grades: list[dict[str, Any]]) -> list[str]:
     if needs:
         return needs
 
-    # Stacked core — last resort: any Average (may include stream).
-    return [g["position"] for g in grades if g.get("grade") == "Average"]
+    # Stacked core — last resort: Average skill only (never default to QB/DST/K).
+    return [
+        g["position"]
+        for g in grades
+        if g.get("grade") == "Average" and g.get("position") in CORE_POS_SET
+    ]
 
 
 def _stream_target_ok(

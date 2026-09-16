@@ -46,8 +46,44 @@ def test_stream_hole_requires_clear_gap():
     assert _is_stream_hole({"position": "DST", "grade": "Weak", "best_rank": None})
     assert _is_stream_hole({"position": "DST", "grade": "Weak", "best_rank": 20})
     assert not _is_stream_hole({"position": "DST", "grade": "Weak", "best_rank": 14})
+    assert not _is_stream_hole({"position": "QB", "grade": "Weak", "best_rank": 14})  # Purdy-tier
+    assert not _is_stream_hole({"position": "QB", "grade": "Average", "best_rank": 14})
+    assert _is_stream_hole({"position": "QB", "grade": "Weak", "best_rank": 22})
     assert not _is_stream_hole({"position": "DST", "grade": "Average", "best_rank": 14})
     assert not _is_stream_hole({"position": "RB", "grade": "Weak", "best_rank": 40})
+
+
+def test_purdy_tier_qb_not_weak_in_12_team():
+    from analysis.roster_grader import grade_roster
+
+    players = {
+        "qb": _player("qb", "Brock Purdy", "QB"),
+        "rb1": _player("rb1", "RB A", "RB"),
+        "rb2": _player("rb2", "RB B", "RB"),
+        "wr1": _player("wr1", "WR A", "WR"),
+        "wr2": _player("wr2", "WR B", "WR"),
+        "te": _player("te", "TE A", "TE"),
+        "dst": _player("dst", "DST A", "DST"),
+        "k": _player("k", "K A", "K"),
+    }
+    rosters = [_row("Me", pid) for pid in players]
+    consensus = [
+        _rank("Brock Purdy", "QB", 14),
+        _rank("RB A", "RB", 10),
+        _rank("RB B", "RB", 30),
+        _rank("WR A", "WR", 8),
+        _rank("WR B", "WR", 25),
+        _rank("TE A", "TE", 8),
+        _rank("DST A", "DST", 10),
+        _rank("K A", "K", 8),
+    ]
+    grades = {g["position"]: g for g in grade_roster("Me", rosters, players, consensus)}
+    assert grades["QB"]["grade"] == "Average", grades["QB"]
+    assert "not a trade hole" in grades["QB"]["why"]
+    needs = _trade_need_positions(list(grades.values()))
+    assert "QB" not in needs
+    trades = find_trade_targets("Me", rosters, players, consensus, limit=12)
+    assert all(t["position"] != "QB" for t in trades)
 
 
 def test_find_trade_targets_skill_over_dst_noise():

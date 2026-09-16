@@ -5,10 +5,42 @@ from __future__ import annotations
 from typing import Any
 
 from analysis.roster_grader import REPLACEMENT_RANK, grade_roster
+from analysis.trade_finder import CORE_POS, CORE_POS_SET, _is_stream_hole
 from ingestion.consensus import index_rankings_by_name, normalize_player_name
 from ingestion.positions import normalize_position
 
 SKILL_POS = {"QB", "RB", "WR", "TE", "DST", "K"}
+
+
+def _waiver_need_positions(grades: list[dict]) -> list[str]:
+    """Skill positions first; QB/DST/K only when a clear hole (waive streamers, don't chase QB14)."""
+    by_pos = {g["position"]: g for g in grades}
+    needs: list[str] = []
+    for pos in CORE_POS:
+        g = by_pos.get(pos)
+        if g and g.get("grade") == "Weak":
+            needs.append(pos)
+    for pos in CORE_POS:
+        if pos in needs:
+            continue
+        g = by_pos.get(pos)
+        if g and g.get("grade") == "Average":
+            needs.append(pos)
+    for pos in ("QB", "DST", "K"):
+        g = by_pos.get(pos)
+        if g and _is_stream_hole(g):
+            needs.append(pos)
+    # Only stream Average DST/K when there is no skill-position need to shop.
+    if not any(p in CORE_POS_SET for p in needs):
+        for pos in ("DST", "K"):
+            if pos in needs:
+                continue
+            g = by_pos.get(pos)
+            if g and g.get("grade") in {"Weak", "Average"}:
+                needs.append(pos)
+    if needs:
+        return needs
+    return [g["position"] for g in grades if g.get("position") in CORE_POS_SET]
 
 
 def _rostered_keys(rosters: list[Any], players: dict[str, Any]) -> set[tuple[str, str]]:
@@ -126,11 +158,11 @@ def find_waiver_pickups(
     consensus = consensus_rankings or []
     rank_index = index_rankings_by_name(consensus)
     grades = grade_roster(team_name, rosters, players, consensus)
-    weak = [g["position"] for g in grades if g["grade"] == "Weak"]
-    average = [g["position"] for g in grades if g["grade"] == "Average"]
-    priority = weak + [p for p in average if p not in weak]
+    priority = _waiver_need_positions(grades)
+    weak = {g["position"] for g in grades if g["grade"] == "Weak"}
+    average = {g["position"] for g in grades if g["grade"] == "Average"}
     if not priority:
-        priority = list(SKILL_POS)
+        priority = list(CORE_POS)
 
     trending_keys = {
         normalize_player_name(n, None) for n in (trending_names or []) if n
@@ -188,9 +220,11 @@ def find_waiver_pickups(
         if rank <= repl:
             why += f" At/above replacement (~#{int(repl)})."
 
-        # Lower rank is better; prioritize weak positions and trending.
+        # Lower rank is better; prioritize earlier need slots and trending.
         pri = priority.index(pos) if pos in priority else 99
-        score = rank + pri * 5 - (8 if trending else 0) - (5 if pos in weak else 0)
+        core_boost = 8 if pos in CORE_POS_SET else 0
+        score = rank + pri * 5 - (8 if trending else 0) - (5 if pos in weak else 0) - core_boost
+
 
         scored.append(
             {
