@@ -225,8 +225,9 @@ def main() -> None:
 
     with tab_trades:
         st.markdown(
-            "Targets on other rosters who upgrade your weak (or average) positions, "
-            "preferring managers with positional surplus. Grounded in consensus ranks."
+            "Targets who upgrade **RB / WR / TE** (Weak, then Average for FLEX depth). "
+            "QB / DST / K only when that slot is a clear hole and the target is elite. "
+            "Prefers counterparts with surplus; includes an offer hint from your Strong spots."
         )
         if not team_names:
             st.info("Pick a team after data loads.")

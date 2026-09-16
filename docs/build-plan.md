@@ -28,7 +28,7 @@ End-to-end local app:
 
 ## Phase 3 — shipped (this slice)
 
-- Trade target finder: upgrades for Weak/Average positions from other rosters, preferring surplus depth + optional offer hint from your Strong spots
+- Trade target finder: prefers RB/WR/TE (Weak then Average / FLEX depth); QB/DST/K only for clear holes with elite upgrades — avoids streaming-slot spam; surplus depth + offer hint from Strong (preferably skill) spots
 - Waiver finder: ESPN/demo free-agent pool merged with unrostered consensus names; Sleeper trending boost
 - Free agents + trending persisted on league meta (`free_agents_json`, `trending_json`)
 - UI: **Trade targets** and **Waiver pickups** tabs with full readable “why” (same pattern as grades)

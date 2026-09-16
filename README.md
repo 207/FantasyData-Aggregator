@@ -47,7 +47,7 @@ If FantasyPros HTML changes, refresh still succeeds with mock ranks and a `stale
 
 ### Recommendations
 
-- **Trade targets** — other managers’ players who upgrade your Weak/Average positions; prefers surplus depth and suggests an offer hint from your Strong spots.
+- **Trade targets** — upgrades at RB/WR/TE first (Weak, then Average for FLEX depth); QB/DST/K only for clear holes with elite targets. Prefers surplus depth and suggests an offer hint from your Strong spots.
 - **Waiver pickups** — ESPN/demo free agents plus unrostered consensus names; Sleeper trending adds are boosted. Full “why” text renders below each table (not clipped in cells).
 
 ## Project layout
