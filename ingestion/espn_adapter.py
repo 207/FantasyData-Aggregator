@@ -7,6 +7,7 @@ from typing import Any
 from dotenv import load_dotenv
 
 from ingestion.demo_data import build_demo_payload
+from ingestion.positions import normalize_lineup_slot, normalize_position
 
 CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
 ENV_PATH = CONFIG_DIR / ".env"
@@ -20,31 +21,13 @@ def load_config() -> dict[str, str]:
         "swid": os.getenv("SWID", "").strip(),
         "espn_s2": os.getenv("ESPN_S2", "").strip(),
         "team_name": os.getenv("TEAM_NAME", "").strip(),
+        "rankings_mode": os.getenv("RANKINGS_MODE", "live").strip().lower() or "live",
     }
 
 
 def espn_configured(cfg: dict[str, str] | None = None) -> bool:
     cfg = cfg or load_config()
     return bool(cfg["league_id"] and cfg["swid"] and cfg["espn_s2"])
-
-
-def _slot_label(lineup_slot: int | None, position: str) -> tuple[str, str]:
-    """Map ESPN lineupSlotId to (slot, lineup_slot label)."""
-    # Common ESPN football lineup slot IDs
-    mapping = {
-        0: ("starter", "QB"),
-        2: ("starter", "RB"),
-        4: ("starter", "WR"),
-        6: ("starter", "TE"),
-        16: ("starter", "DST"),
-        17: ("starter", "K"),
-        20: ("bench", "BE"),
-        21: ("IR", "IR"),
-        23: ("starter", "FLEX"),
-    }
-    if lineup_slot in mapping:
-        return mapping[lineup_slot]
-    return ("bench", position or "BE")
 
 
 def fetch_espn_league(cfg: dict[str, str] | None = None) -> dict[str, Any]:
@@ -88,7 +71,8 @@ def fetch_espn_league(cfg: dict[str, str] | None = None) -> dict[str, Any]:
 
         for player in getattr(team, "roster", []) or []:
             pid = str(getattr(player, "playerId", None) or getattr(player, "id", player.name))
-            pos = getattr(player, "position", "") or ""
+            # ESPN returns defense as "D/ST"; normalize to DST so grades/UI match.
+            pos = normalize_position(getattr(player, "position", "") or "")
             nfl = getattr(player, "proTeam", "") or getattr(player, "pro_team", "") or ""
             players[pid] = {
                 "player_id": pid,
@@ -99,14 +83,7 @@ def fetch_espn_league(cfg: dict[str, str] | None = None) -> dict[str, Any]:
             lineup_slot_id = getattr(player, "lineupSlot", None)
             if lineup_slot_id is None:
                 lineup_slot_id = getattr(player, "slot_position", None)
-            # slot_position may already be a string like "RB" / "BE"
-            if isinstance(lineup_slot_id, str):
-                slot = "bench" if lineup_slot_id in {"BE", "IR"} else "starter"
-                if lineup_slot_id == "IR":
-                    slot = "IR"
-                lineup = lineup_slot_id
-            else:
-                slot, lineup = _slot_label(lineup_slot_id, pos)
+            slot, lineup = normalize_lineup_slot(lineup_slot_id, pos)
             rosters.append(
                 {
                     "team_id": team_id,
