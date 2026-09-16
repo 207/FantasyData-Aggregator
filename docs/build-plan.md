@@ -6,17 +6,25 @@ Local single-user fantasy football analyzer: pull ESPN league data, grade the ro
 
 Source of truth: `docs/fantasy-football-analyzer-design.md` (repo).
 
-## MVP slice (Phase 1 — this PR)
+## Phase 1 — shipped
 
-End-to-end local app you can run now:
+End-to-end local app:
 
 - Streamlit dashboard with roster, standings, and matchup views
 - SQLite persistence for league meta + roster snapshots
 - ESPN adapter via `espn_api` when `SWID` / `espn_s2` / league id are set
-- Demo mode with sample league data when ESPN credentials are absent (so the product is usable immediately)
+- Demo mode with sample league data when ESPN credentials are absent
 - Manual **Refresh Data** that reloads adapters and rewrites SQLite
+- D/ST position normalization (`D/ST` → `DST`) so defense grades correctly
 
-Out of scope for this slice: FantasyPros/Sleeper adapters, trade/waiver engines, news, scheduling.
+## Phase 2 — shipped (this slice)
+
+- FantasyPros adapter (live scrape + mock fallback)
+- Sleeper adapter (public search-rank board + trending adds log)
+- Consensus rankings (weighted FP + Sleeper) persisted in SQLite
+- Positional roster grades vs replacement level (depth fallback if ranks missing)
+- UI: **Consensus ranks** tab + richer grade “why”
+- Config: `RANKINGS_MODE`, `SLEEPER_ENABLED`, `FANTASYPROS_RANKINGS_URL`
 
 ## Stack
 
@@ -25,11 +33,11 @@ Out of scope for this slice: FantasyPros/Sleeper adapters, trade/waiver engines,
 | Language | Python 3.11+ |
 | UI | Streamlit |
 | League data | `espn_api` (+ demo fallback) |
+| Rankings | FantasyPros scrape + Sleeper API (+ mock) |
 | Storage | SQLite via `sqlmodel` |
-| Config | `.env` (gitignored) for ESPN cookies / league id / year |
+| Config | `.env` (gitignored) for ESPN cookies / league id / year / rankings |
 
 ## Next steps
 
-1. **Phase 2** — FantasyPros + Sleeper adapters, consensus rankings, positional roster grades
-2. **Phase 3** — Trade targets and waiver pickup recommendations with explainable “why”
-3. **Phase 4** — News/injury flags, historical charts, optional weekly auto-refresh
+1. **Phase 3** — Trade targets and waiver pickup recommendations with explainable “why”
+2. **Phase 4** — News/injury flags, historical charts, optional weekly auto-refresh

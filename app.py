@@ -11,7 +11,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from analysis.roster_grader import grade_roster
-from ingestion.espn_adapter import espn_configured, fetch_league, load_config
+from ingestion.espn_adapter import espn_configured, load_config
+from ingestion.refresh import fetch_league
 from storage.db import init_db, load_dashboard, upsert_league_snapshot
 
 st.set_page_config(
@@ -40,7 +41,7 @@ def status_badge(mode: str) -> str:
 
 def main() -> None:
     st.title("FantasyAnalysis")
-    st.caption("Local ESPN fantasy league analyzer — roster, standings, and positional gaps.")
+    st.caption("Local ESPN fantasy league analyzer — roster, standings, consensus grades.")
 
     cfg = load_config()
     with st.sidebar:
@@ -50,8 +51,9 @@ def main() -> None:
             if espn_configured(cfg)
             else "Demo league (no ESPN cookies configured)"
         )
+        st.caption(f"Rankings mode: **{cfg.get('rankings_mode', 'live')}**")
         if st.button("Refresh Data", type="primary", use_container_width=True):
-            with st.spinner("Pulling league data…"):
+            with st.spinner("Pulling league + rankings…"):
                 ensure_data(force_refresh=True)
             st.success("Refresh complete.")
             st.rerun()
@@ -65,6 +67,10 @@ def main() -> None:
         st.markdown(
             "Copy `config/.env.example` → `config/.env` and set `LEAGUE_ID`, `YEAR`, "
             "`SWID`, and `ESPN_S2` from fantasy.espn.com cookies. Then hit **Refresh Data**."
+        )
+        st.markdown(
+            "Optional rankings: `RANKINGS_MODE=live|mock`, `SLEEPER_ENABLED=true`, "
+            "`FANTASYPROS_RANKINGS_URL=…`."
         )
         if cfg.get("team_name"):
             st.caption(f"Preferred team: **{cfg['team_name']}**")
@@ -80,6 +86,7 @@ def main() -> None:
     standings = dash["standings"]
     matchups = dash["matchups"]
     logs = dash["logs"]
+    ranking_rows = dash.get("rankings") or []
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("League", meta.league_name or meta.league_id)
@@ -93,8 +100,21 @@ def main() -> None:
     preferred = cfg.get("team_name") or (team_names[0] if team_names else "")
     default_idx = team_names.index(preferred) if preferred in team_names else 0
 
-    tab_roster, tab_standings, tab_matchups, tab_grades, tab_status = st.tabs(
-        ["Roster", "Standings", "Matchups", "Positional grades", "Source status"]
+    consensus_for_grade: list[dict] = []
+    consensus_table: list[dict] = []
+    for r in ranking_rows:
+        if r.source != "consensus":
+            continue
+        player = players.get(r.player_id)
+        name = (r.player_name or (player.name if player else "") or str(r.player_id)).strip()
+        pos = (r.position or (player.position if player else "") or "").strip()
+        consensus_for_grade.append(
+            {"name": name, "position": pos or "?", "rank": r.rank, "tier": r.tier, "source": "consensus"}
+        )
+        consensus_table.append({"Rank": r.rank, "Player": name, "Pos": pos or "—", "Tier": r.tier or "—"})
+
+    tab_roster, tab_standings, tab_matchups, tab_grades, tab_ranks, tab_status = st.tabs(
+        ["Roster", "Standings", "Matchups", "Positional grades", "Consensus ranks", "Source status"]
     )
 
     with tab_roster:
@@ -157,14 +177,14 @@ def main() -> None:
 
     with tab_grades:
         st.markdown(
-            "Phase 1 grades depth by position only. Phase 2 will blend FantasyPros / Sleeper "
-            "consensus ranks so each grade shows *why* against replacement level."
+            "Grades blend FantasyPros + Sleeper consensus ranks vs positional replacement level. "
+            "If rankings are unavailable, depth-only grades are shown."
         )
         if not team_names:
             st.info("Pick a team after data loads.")
         else:
             grade_team = st.selectbox("Grade team", team_names, index=default_idx, key="grade_team")
-            grades = grade_roster(grade_team, rosters, players)
+            grades = grade_roster(grade_team, rosters, players, consensus_for_grade)
             gdf = pd.DataFrame(grades)
             if not gdf.empty:
                 st.dataframe(
@@ -174,6 +194,7 @@ def main() -> None:
                             "grade": "Grade",
                             "count": "Count",
                             "players": "Players",
+                            "best_rank": "Best rank",
                             "why": "Why",
                         }
                     ),
@@ -181,8 +202,21 @@ def main() -> None:
                     hide_index=True,
                 )
 
+    with tab_ranks:
+        st.markdown("Consensus board (FantasyPros weighted with Sleeper search ranks).")
+        if not consensus_table:
+            st.info("No consensus rankings in the latest refresh — check Source status.")
+        else:
+            cdf = pd.DataFrame(consensus_table)
+            positions = sorted({r["Pos"] for r in consensus_table if r["Pos"] != "—"})
+            default_pos = [p for p in ["QB", "RB", "WR", "TE", "DST", "K"] if p in positions] or positions
+            pos_filter = st.multiselect("Positions", positions, default=default_pos)
+            if pos_filter:
+                cdf = cdf[cdf["Pos"].isin(pos_filter)]
+            st.dataframe(cdf.sort_values(["Pos", "Rank"]), use_container_width=True, hide_index=True)
+
     with tab_status:
-        st.markdown("Adapter health from the last refresh — failures degrade to cache/demo.")
+        st.markdown("Adapter health from the last refresh — failures degrade to mock/cache.")
         lrows = [
             {
                 "Source": log.source,

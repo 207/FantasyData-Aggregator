@@ -11,6 +11,7 @@ from storage.models import (
     LeagueMeta,
     MatchupRow,
     Player,
+    Ranking,
     RefreshLog,
     RosterSnapshot,
     TeamStanding,
@@ -29,12 +30,34 @@ def get_engine(db_path: Path | None = None):
 def init_db(engine=None) -> None:
     engine = engine or get_engine()
     SQLModel.metadata.create_all(engine)
+    _ensure_ranking_columns(engine)
+
+
+def _ensure_ranking_columns(engine) -> None:
+    """SQLite create_all won't add new columns — patch rankings if needed."""
+    with engine.connect() as conn:
+        rows = conn.exec_driver_sql("PRAGMA table_info(rankings)").fetchall()
+        if not rows:
+            return
+        cols = {r[1] for r in rows}
+        if "player_name" not in cols:
+            conn.exec_driver_sql("ALTER TABLE rankings ADD COLUMN player_name VARCHAR DEFAULT ''")
+        if "position" not in cols:
+            conn.exec_driver_sql("ALTER TABLE rankings ADD COLUMN position VARCHAR DEFAULT ''")
+        conn.commit()
 
 
 def clear_league_tables(session: Session) -> None:
+    """Clear league snapshot tables. Rankings are replaced separately."""
     for model in (RosterSnapshot, TeamStanding, MatchupRow, Player, LeagueMeta, RefreshLog):
         for row in session.exec(select(model)).all():
             session.delete(row)
+    session.commit()
+
+
+def clear_rankings(session: Session) -> None:
+    for row in session.exec(select(Ranking)).all():
+        session.delete(row)
     session.commit()
 
 
@@ -117,6 +140,24 @@ def upsert_league_snapshot(payload: dict[str, Any], engine=None) -> LeagueMeta:
                 )
             )
 
+        # Optional rankings bundled on the same refresh payload
+        if payload.get("rankings") is not None:
+            clear_rankings(session)
+            for row in payload.get("rankings", []):
+                session.add(
+                    Ranking(
+                        player_id=str(row.get("player_id") or row.get("name") or ""),
+                        player_name=str(row.get("name") or row.get("player_name") or ""),
+                        position=str(row.get("position") or ""),
+                        source=str(row.get("source", "consensus")),
+                        week=int(row.get("week", meta.current_week)),
+                        rank=int(row.get("rank", 999)),
+                        tier=row.get("tier"),
+                        projected_points=row.get("projected_points"),
+                        pulled_at=row.get("pulled_at") or datetime.now(timezone.utc),
+                    )
+                )
+
         session.commit()
         session.refresh(meta)
         return meta
@@ -136,6 +177,7 @@ def load_dashboard(engine=None) -> dict[str, Any]:
         standings = session.exec(select(TeamStanding)).all()
         matchups = session.exec(select(MatchupRow)).all()
         logs = session.exec(select(RefreshLog).order_by(RefreshLog.id.desc())).all()
+        rankings = session.exec(select(Ranking)).all()
 
         return {
             "meta": meta,
@@ -144,4 +186,5 @@ def load_dashboard(engine=None) -> dict[str, Any]:
             "standings": standings,
             "matchups": matchups,
             "logs": logs,
+            "rankings": rankings,
         }

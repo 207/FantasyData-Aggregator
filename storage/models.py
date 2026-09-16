@@ -20,6 +20,8 @@ class Ranking(SQLModel, table=True):
 
     id: Optional[int] = Field(default=None, primary_key=True)
     player_id: str = Field(index=True)
+    player_name: str = ""
+    position: str = ""
     source: str
     week: int
     rank: int
