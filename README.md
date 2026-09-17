@@ -57,9 +57,13 @@ In `config/.env` (from `.env.example` if needed):
 LLM_PROVIDER=ollama
 OLLAMA_BASE_URL=http://127.0.0.1:11434
 OLLAMA_MODEL=llama3.1:8b
+OLLAMA_NUM_CTX=16384      # default ~2048 truncates league JSON → empty/garbage recs
+OLLAMA_NUM_PREDICT=2048
 ```
 
 In the app: **Refresh Data**, open **LLM recommendations**, click **Generate recommendations**.
+
+The UI sends a **compacted** context pack to Ollama (fits 8B + `num_ctx`) but keeps a **full untruncated** context for export. Use **Download full context JSON** (or the copy/paste text area) to paste into Claude in the browser; **Download raw LLM response** captures the model output too.
 
 If Ollama is down, the app still shows league/ranks/flags and prints setup instructions — it does not crash.
 

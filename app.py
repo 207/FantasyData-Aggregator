@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import importlib
 import json
+import re
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -98,6 +100,27 @@ def _rank_table(ranking_rows, *, horizon: str, source_filter: str | None = None)
             }
         )
     return pd.DataFrame(rows)
+
+
+def _safe_filename(text: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", (text or "team").strip())
+    return cleaned.strip("-")[:48] or "team"
+
+
+def _llm_export_bundle(out: dict, *, team_name: str, week: int | str) -> tuple[str, str, str, str]:
+    """Return (context_json, raw_json, context_filename, raw_filename)."""
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    base = f"fantasy-llm-{_safe_filename(team_name)}-wk{week}-{stamp}"
+    context_json = json.dumps(out.get("context") or {}, indent=2, default=str)
+    raw_payload = {
+        "raw_response": out.get("raw_response"),
+        "result": out.get("result"),
+        "ok": out.get("ok"),
+        "error": out.get("error"),
+        "context_sent": out.get("context_sent"),
+    }
+    raw_json = json.dumps(raw_payload, indent=2, default=str)
+    return context_json, raw_json, f"{base}-context.json", f"{base}-raw.json"
 
 
 def main() -> None:
@@ -461,11 +484,57 @@ def main() -> None:
                         "Weakness flags and rankings still work without an LLM — "
                         "see other tabs."
                     )
-                with st.expander("Context sent to LLM (JSON)"):
-                    st.code(
-                        json.dumps(out.get("context") or {}, indent=2, default=str)[:12000],
-                        language="json",
+
+                week = getattr(meta, "current_week", "?") if meta else "?"
+                ctx_json, raw_json, ctx_name, raw_name = _llm_export_bundle(
+                    out, team_name=rec_team, week=week
+                )
+                st.subheader("Export for Claude / paste")
+                st.caption(
+                    "Full context JSON is untruncated (what you want for Claude in the browser). "
+                    "Ollama receives a compacted pack so llama3.1:8b fits in num_ctx."
+                )
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    st.download_button(
+                        "Download full context JSON",
+                        data=ctx_json,
+                        file_name=ctx_name,
+                        mime="application/json",
+                        use_container_width=True,
+                        key="dl_llm_context",
                     )
+                with c2:
+                    st.download_button(
+                        "Download raw LLM response",
+                        data=raw_json,
+                        file_name=raw_name,
+                        mime="application/json",
+                        use_container_width=True,
+                        key="dl_llm_raw",
+                        disabled=not bool(out.get("raw_response") or out.get("result")),
+                    )
+                with c3:
+                    if st.button("Clear LLM results", use_container_width=True, key="clear_llm"):
+                        st.session_state.pop("llm_recs", None)
+                        st.rerun()
+
+                with st.expander("Full context JSON (copy/paste)"):
+                    st.text_area(
+                        "context",
+                        value=ctx_json,
+                        height=280,
+                        label_visibility="collapsed",
+                        key="llm_context_textarea",
+                    )
+                    st.caption(f"Filename suggestion: `{ctx_name}` · {len(ctx_json):,} chars")
+                with st.expander("Compact pack sent to Ollama"):
+                    sent = json.dumps(out.get("context_sent") or {}, indent=2, default=str)
+                    st.code(sent, language="json")
+                    st.caption(f"{len(sent):,} chars (compacted)")
+                if out.get("raw_response"):
+                    with st.expander("Raw LLM response"):
+                        st.code(str(out.get("raw_response")), language="json")
 
     with tab_status:
         st.markdown("Adapter health from the last refresh — failures degrade to mock/cache.")

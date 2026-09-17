@@ -106,7 +106,7 @@ def build_recommendation_context(
     news_items: list[Any],
     include_start_sit: bool = True,
 ) -> dict[str, Any]:
-    """Structured payload fed to the LLM — no heavy package math."""
+    """Full structured payload — used for export / Claude paste; may be large."""
     hunt = [p for p in hunt_positions if p in TRADE_POS] or list(TRADE_POS)
     roster_slots = getattr(meta, "roster_slots", None) or "{}"
 
@@ -202,6 +202,103 @@ def build_recommendation_context(
     }
 
 
+def compact_context_for_llm(context: dict[str, Any]) -> dict[str, Any]:
+    """
+    Shrink full export context so an 8B Ollama model can fit it in num_ctx.
+
+    Keeps the same semantic content the advisor needs; drops by-source ranking
+    samples and shortens field names / news. Full context remains for export.
+    """
+    raw = json.loads(json.dumps(context, default=str))
+
+    def slim_roster(roster: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [
+            {
+                "n": p.get("name"),
+                "p": p.get("position"),
+                "s": p.get("slot") or p.get("lineup_slot") or "",
+            }
+            for p in roster
+        ]
+
+    your = raw.get("your_team") or {}
+    ranks = raw.get("rankings") or {}
+    ros = ranks.get("ros_consensus_top") or []
+    weekly = ranks.get("weekly_consensus_top") or []
+
+    news_out: list[dict[str, Any]] = []
+    for n in raw.get("news_injuries") or []:
+        headline = (n.get("headline") or "").lower()
+        flag = n.get("injury_flag") or ""
+        if flag or any(x in headline for x in ("injur", "out", " ir", "doubt", "question", "suspend")):
+            news_out.append(
+                {
+                    "player": n.get("player_name") or "",
+                    "flag": flag,
+                    "h": (n.get("headline") or "")[:70],
+                }
+            )
+        if len(news_out) >= 15:
+            break
+
+    return {
+        "rules": raw.get("rules") or {},
+        "league": {
+            "name": (raw.get("league") or {}).get("name"),
+            "week": (raw.get("league") or {}).get("week"),
+            "year": (raw.get("league") or {}).get("year"),
+            "roster_slots": (raw.get("league") or {}).get("roster_slots") or {},
+            "standings": (raw.get("league") or {}).get("standings") or [],
+        },
+        "your_team": {
+            "name": your.get("name"),
+            "roster": slim_roster(your.get("roster") or []),
+            "weakness_flags": [
+                {
+                    "position": f.get("position"),
+                    "level": f.get("level"),
+                    "best_player": f.get("best_player"),
+                    "best_rank": f.get("best_rank"),
+                    "why": f.get("why"),
+                }
+                for f in (your.get("weakness_flags") or [])
+            ],
+        },
+        "other_rosters": {
+            t: slim_roster(r) for t, r in (raw.get("other_rosters") or {}).items()
+        },
+        "league_weakness_flags": [
+            {
+                "team": f.get("team"),
+                "position": f.get("position"),
+                "level": f.get("level"),
+                "best_player": f.get("best_player"),
+                "best_rank": f.get("best_rank"),
+            }
+            for f in (raw.get("league_weakness_flags") or [])[:30]
+        ],
+        "rankings": {
+            "ros_top": [
+                {"n": r.get("name"), "p": r.get("position"), "r": r.get("rank")}
+                for r in ros[:45]
+            ],
+            "weekly_top": [
+                {"n": r.get("name"), "p": r.get("position"), "r": r.get("rank")}
+                for r in weekly[:35]
+            ],
+        },
+        "free_agents_skill": [
+            {"n": f.get("name"), "p": f.get("position")}
+            for f in (raw.get("free_agents_skill") or [])[:30]
+        ],
+        "news_injuries": news_out,
+        "_packing": {
+            "note": "Compacted for local 8B context window; export JSON is untruncated.",
+            "full_context_chars": len(json.dumps(context, default=str)),
+        },
+    }
+
+
 SYSTEM_PROMPT = """You are a sharp fantasy football advisor for a 12-team ESPN redraft league.
 Return ONLY valid JSON matching this schema:
 {
@@ -237,13 +334,16 @@ Hard rules:
 - Prefer hunt_positions for acquire targets.
 - Use ROS ranks + weakness flags for trades/waivers; weekly ranks for start/sit.
 - Prefer realistic win-win pitches over steals.
-- Limit: up to 5 trades, 8 waivers, 5 start/sit.
+- Limit: up to 3 trades, 5 waivers, 3 start/sit. Keep each why to one short sentence.
 - If data is thin, return fewer ideas and explain in notes — do not invent players not in context.
+- Keys n/p/r/s in packed JSON mean name/position/rank/slot.
 """
 
 
-def build_user_prompt(context: dict[str, Any]) -> str:
+def build_user_prompt(context: dict[str, Any], *, compact: bool = True) -> str:
+    payload = compact_context_for_llm(context) if compact else context
     return (
-        "Using this league context JSON, propose trades, waivers, and optional start/sit.\n\n"
-        + json.dumps(context, default=str)
+        "Using this league context JSON, propose trades, waivers, and optional start/sit. "
+        "Keep why fields to one short sentence. Max 3 trades, 5 waivers, 3 start/sit.\n\n"
+        + json.dumps(payload, default=str, separators=(",", ":"))
     )

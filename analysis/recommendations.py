@@ -5,7 +5,12 @@ from __future__ import annotations
 from typing import Any
 
 from analysis.llm_client import complete_json, describe_setup
-from analysis.llm_context import SYSTEM_PROMPT, build_recommendation_context, build_user_prompt
+from analysis.llm_context import (
+    SYSTEM_PROMPT,
+    build_recommendation_context,
+    build_user_prompt,
+    compact_context_for_llm,
+)
 from analysis.weakness import TRADE_POS
 
 NEVER_TRADE = frozenset({"QB", "DST", "K"})
@@ -74,8 +79,11 @@ def generate_recommendations(
     include_start_sit: bool = True,
 ) -> dict[str, Any]:
     """
-    Returns {"ok": bool, "error": str|None, "context": dict, "result": dict|None, "setup": str}.
-    On LLM failure, still returns context so the UI can show flags/data.
+    Returns {
+      ok, error, context (full/untruncated), context_sent (compact),
+      raw_response, result, setup
+    }.
+    On LLM failure, still returns full context so the UI can export/paste.
     """
     hunt = [p for p in (hunt_positions or list(TRADE_POS)) if p in TRADE_POS] or list(TRADE_POS)
     context = build_recommendation_context(
@@ -90,14 +98,17 @@ def generate_recommendations(
         news_items=news_items,
         include_start_sit=include_start_sit,
     )
+    context_sent = compact_context_for_llm(context)
     setup = describe_setup()
     try:
-        raw = complete_json(SYSTEM_PROMPT, build_user_prompt(context))
+        raw, raw_text = complete_json(SYSTEM_PROMPT, build_user_prompt(context, compact=True))
     except RuntimeError as exc:
         return {
             "ok": False,
             "error": str(exc),
             "context": context,
+            "context_sent": context_sent,
+            "raw_response": None,
             "result": None,
             "setup": setup,
         }
@@ -112,6 +123,8 @@ def generate_recommendations(
         "ok": True,
         "error": None,
         "context": context,
+        "context_sent": context_sent,
+        "raw_response": raw_text,
         "result": result,
         "setup": setup,
     }
