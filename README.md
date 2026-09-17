@@ -29,15 +29,19 @@ Open [http://127.0.0.1:3847](http://127.0.0.1:3847).
 
 ## Ollama (default LLM)
 
-1. Install from [ollama.com](https://ollama.com)
-2. Pull a 7B–14B model for a ~24GB Mac, e.g.:
+On this MacBook Air, Ollama is installed via Homebrew (`brew install ollama`) at `/opt/homebrew/bin/ollama` and runs as a LaunchAgent (`brew services start ollama`). No `Ollama.app` GUI is required.
+
+If a terminal still says `command not found: ollama`, open a **new** terminal (or ensure Homebrew is on PATH: `eval "$(/opt/homebrew/bin/brew shellenv)"`).
 
 ```bash
-ollama pull llama3.1:8b
+brew services start ollama   # API at http://127.0.0.1:11434
+ollama pull llama3.1:8b      # ~4.9 GB on disk (Q4_K_M)
 # alternatives: mistral, qwen2.5:14b, llama3.2:3b (lighter)
 ```
 
-3. Copy `config/.env.example` → `config/.env` and set:
+Confirm: `curl -s http://127.0.0.1:11434/api/tags` or `ollama list`.
+
+In `config/.env` (from `.env.example` if needed):
 
 ```bash
 LLM_PROVIDER=ollama
@@ -45,7 +49,7 @@ OLLAMA_BASE_URL=http://127.0.0.1:11434
 OLLAMA_MODEL=llama3.1:8b
 ```
 
-4. In the app: **Refresh Data**, open **LLM recommendations**, click **Generate recommendations**.
+In the app: **Refresh Data**, open **LLM recommendations**, click **Generate recommendations**.
 
 If Ollama is down, the app still shows league/ranks/flags and prints setup instructions — it does not crash.
 
