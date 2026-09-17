@@ -12,6 +12,26 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+
+def _require_stdlib_resources() -> None:
+    """Fail fast when Homebrew upgraded Python out from under a long-lived process/venv."""
+    try:
+        import importlib.resources as _resources  # noqa: F401
+    except ModuleNotFoundError as exc:
+        base = getattr(sys, "base_prefix", "") or ""
+        raise RuntimeError(
+            "Python stdlib is broken in this process "
+            f"(cannot import importlib.resources: {exc}). "
+            "Usually Homebrew upgraded python@3.14 while Streamlit was still running, "
+            "or `.venv` still points at a removed Cellar build. "
+            "Fix: stop Streamlit, recreate `.venv` with the current interpreter, "
+            f"reinstall requirements, and restart. base_prefix={base!r} "
+            f"executable={sys.executable!r}"
+        ) from exc
+
+
+_require_stdlib_resources()
+
 from analysis import recommendations as recommendations_mod
 from analysis import trade_finder as trade_finder_mod
 from analysis import waiver_finder as waiver_finder_mod

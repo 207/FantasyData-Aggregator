@@ -18,8 +18,11 @@ Design notes: [`docs/fantasy-football-analyzer-design.md`](docs/fantasy-football
 
 ## Run the app
 
+Prefer the project venv (Homebrew `python@3.14` on this Mac):
+
 ```bash
-python3 -m venv .venv
+cd /Users/bennettsmolen/Fantasy
+/opt/homebrew/opt/python@3.14/bin/python3.14 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 streamlit run app.py --server.port 3847 --server.address 127.0.0.1
@@ -27,6 +30,13 @@ streamlit run app.py --server.port 3847 --server.address 127.0.0.1
 
 Open [http://127.0.0.1:3847](http://127.0.0.1:3847).
 
+If **Refresh Data** fails every live source with `No module named 'importlib.resources'`, the venv or a long-lived Streamlit process is pointing at a removed Homebrew Python build (common after `brew upgrade`). Stop Streamlit, recreate `.venv` as above, reinstall requirements, and start again. Old terminals that used to run the app can be closed — they are not the server after a restart.
+
+```bash
+# find / kill stale app servers
+lsof -nP -iTCP:3847 -sTCP:LISTEN
+pkill -f 'streamlit run app.py'   # only if you intend to stop FantasyAnalysis
+```
 ## Ollama (default LLM)
 
 On this MacBook Air, Ollama is installed via Homebrew (`brew install ollama`) at `/opt/homebrew/bin/ollama` and runs as a LaunchAgent (`brew services start ollama`). No `Ollama.app` GUI is required.
