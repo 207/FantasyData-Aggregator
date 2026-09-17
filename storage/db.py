@@ -10,6 +10,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 from storage.models import (
     LeagueMeta,
     MatchupRow,
+    NewsItem,
     Player,
     Ranking,
     RefreshLog,
@@ -32,6 +33,7 @@ def init_db(engine=None) -> None:
     SQLModel.metadata.create_all(engine)
     _ensure_ranking_columns(engine)
     _ensure_league_meta_columns(engine)
+    _ensure_news_columns(engine)
 
 
 def _ensure_ranking_columns(engine) -> None:
@@ -45,6 +47,8 @@ def _ensure_ranking_columns(engine) -> None:
             conn.exec_driver_sql("ALTER TABLE rankings ADD COLUMN player_name VARCHAR DEFAULT ''")
         if "position" not in cols:
             conn.exec_driver_sql("ALTER TABLE rankings ADD COLUMN position VARCHAR DEFAULT ''")
+        if "horizon" not in cols:
+            conn.exec_driver_sql("ALTER TABLE rankings ADD COLUMN horizon VARCHAR DEFAULT 'ros'")
         conn.commit()
 
 
@@ -55,14 +59,31 @@ def _ensure_league_meta_columns(engine) -> None:
             return
         cols = {r[1] for r in rows}
         if "free_agents_json" not in cols:
-            conn.exec_driver_sql("ALTER TABLE league_meta ADD COLUMN free_agents_json VARCHAR DEFAULT '[]'")
+            conn.exec_driver_sql(
+                "ALTER TABLE league_meta ADD COLUMN free_agents_json VARCHAR DEFAULT '[]'"
+            )
         if "trending_json" not in cols:
-            conn.exec_driver_sql("ALTER TABLE league_meta ADD COLUMN trending_json VARCHAR DEFAULT '[]'")
+            conn.exec_driver_sql(
+                "ALTER TABLE league_meta ADD COLUMN trending_json VARCHAR DEFAULT '[]'"
+            )
+        conn.commit()
+
+
+def _ensure_news_columns(engine) -> None:
+    with engine.connect() as conn:
+        rows = conn.exec_driver_sql("PRAGMA table_info(news)").fetchall()
+        if not rows:
+            return
+        cols = {r[1] for r in rows}
+        if "player_name" not in cols:
+            conn.exec_driver_sql("ALTER TABLE news ADD COLUMN player_name VARCHAR DEFAULT ''")
+        if "injury_flag" not in cols:
+            conn.exec_driver_sql("ALTER TABLE news ADD COLUMN injury_flag VARCHAR DEFAULT ''")
         conn.commit()
 
 
 def clear_league_tables(session: Session) -> None:
-    """Clear league snapshot tables. Rankings are replaced separately."""
+    """Clear league snapshot tables. Rankings/news are replaced separately."""
     for model in (RosterSnapshot, TeamStanding, MatchupRow, Player, LeagueMeta, RefreshLog):
         for row in session.exec(select(model)).all():
             session.delete(row)
@@ -71,6 +92,12 @@ def clear_league_tables(session: Session) -> None:
 
 def clear_rankings(session: Session) -> None:
     for row in session.exec(select(Ranking)).all():
+        session.delete(row)
+    session.commit()
+
+
+def clear_news(session: Session) -> None:
+    for row in session.exec(select(NewsItem)).all():
         session.delete(row)
     session.commit()
 
@@ -156,7 +183,6 @@ def upsert_league_snapshot(payload: dict[str, Any], engine=None) -> LeagueMeta:
                 )
             )
 
-        # Optional rankings bundled on the same refresh payload
         if payload.get("rankings") is not None:
             clear_rankings(session)
             for row in payload.get("rankings", []):
@@ -166,11 +192,33 @@ def upsert_league_snapshot(payload: dict[str, Any], engine=None) -> LeagueMeta:
                         player_name=str(row.get("name") or row.get("player_name") or ""),
                         position=str(row.get("position") or ""),
                         source=str(row.get("source", "consensus")),
+                        horizon=str(row.get("horizon") or "ros"),
                         week=int(row.get("week", meta.current_week)),
                         rank=int(row.get("rank", 999)),
                         tier=row.get("tier"),
                         projected_points=row.get("projected_points"),
                         pulled_at=row.get("pulled_at") or datetime.now(timezone.utc),
+                    )
+                )
+
+        if payload.get("news") is not None:
+            clear_news(session)
+            for item in payload.get("news", []):
+                pub = item.get("published_at")
+                if isinstance(pub, str):
+                    try:
+                        pub = datetime.fromisoformat(pub.replace("Z", "+00:00"))
+                    except ValueError:
+                        pub = None
+                session.add(
+                    NewsItem(
+                        player_id=str(item.get("player_id") or ""),
+                        player_name=str(item.get("player_name") or ""),
+                        source=str(item.get("source") or "news"),
+                        headline=str(item.get("headline") or ""),
+                        body=str(item.get("body") or ""),
+                        injury_flag=str(item.get("injury_flag") or ""),
+                        published_at=pub,
                     )
                 )
 
@@ -194,6 +242,7 @@ def load_dashboard(engine=None) -> dict[str, Any]:
         matchups = session.exec(select(MatchupRow)).all()
         logs = session.exec(select(RefreshLog).order_by(RefreshLog.id.desc())).all()
         rankings = session.exec(select(Ranking)).all()
+        news = session.exec(select(NewsItem).order_by(NewsItem.id.desc())).all()
 
         free_agents: list[dict] = []
         trending: list[str] = []
@@ -216,6 +265,7 @@ def load_dashboard(engine=None) -> dict[str, Any]:
             "matchups": matchups,
             "logs": logs,
             "rankings": rankings,
+            "news": news,
             "free_agents": free_agents,
             "trending": trending,
         }

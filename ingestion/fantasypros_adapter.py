@@ -17,8 +17,12 @@ from ingestion.positions import normalize_position
 CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
 load_dotenv(CONFIG_DIR / ".env")
 
-# Public consensus cheatsheet (overall). Override via FANTASYPROS_RANKINGS_URL.
-DEFAULT_FP_URL = "https://www.fantasypros.com/nfl/rankings/consensus-cheatsheets.php"
+# ROS / season-long consensus. Override via FANTASYPROS_RANKINGS_URL.
+DEFAULT_FP_ROS_URL = "https://www.fantasypros.com/nfl/rankings/ros-ppr-overall.php"
+# Weekly PPR overall. Override via FANTASYPROS_WEEKLY_URL.
+DEFAULT_FP_WEEKLY_URL = "https://www.fantasypros.com/nfl/rankings/ppr.php"
+# Legacy alias
+DEFAULT_FP_URL = DEFAULT_FP_ROS_URL
 
 # Sensible offline ranks used when scrape fails or RANKINGS_MODE=mock.
 MOCK_RANKINGS: list[dict[str, Any]] = [
@@ -83,29 +87,34 @@ MOCK_RANKINGS: list[dict[str, Any]] = [
 ]
 
 
-def _mock_rows(week: int) -> list[dict[str, Any]]:
+def _mock_rows(week: int, horizon: str = "ros") -> list[dict[str, Any]]:
     pulled = datetime.now(timezone.utc)
     rows = []
     for item in MOCK_RANKINGS:
+        # Slight weekly jitter so mock weekly ≠ ROS for demos
+        rank = int(item["rank"])
+        if horizon == "weekly":
+            rank = max(1, rank + (hash(item["name"]) % 5) - 2)
         rows.append(
             {
                 "name": item["name"],
                 "position": normalize_position(item["position"]),
-                "rank": int(item["rank"]),
+                "rank": rank,
                 "tier": item.get("tier"),
                 "projected_points": None,
                 "source": "fantasypros_mock",
+                "horizon": horizon,
                 "week": week,
                 "pulled_at": pulled,
             }
         )
-    return rows
+    return _to_positional_ranks(rows)
 
 
-def _parse_rankings_html(html: str, week: int) -> list[dict[str, Any]]:
+def _parse_rankings_html(html: str, week: int, horizon: str = "ros") -> list[dict[str, Any]]:
     soup = BeautifulSoup(html, "lxml")
     # Prefer embedded ecrData JS object (current FantasyPros pages).
-    embedded = _try_parse_ecr_data(html, week)
+    embedded = _try_parse_ecr_data(html, week, horizon=horizon)
     if embedded:
         return embedded
 
@@ -148,6 +157,7 @@ def _parse_rankings_html(html: str, week: int) -> list[dict[str, Any]]:
                 "tier": None,
                 "projected_points": None,
                 "source": "fantasypros",
+                "horizon": horizon,
                 "week": week,
                 "pulled_at": pulled,
             }
@@ -190,7 +200,7 @@ def _extract_js_object(text: str, marker: str) -> str | None:
     return None
 
 
-def _try_parse_ecr_data(html: str, week: int) -> list[dict[str, Any]] | None:
+def _try_parse_ecr_data(html: str, week: int, horizon: str = "ros") -> list[dict[str, Any]] | None:
     import json
 
     blob = _extract_js_object(html, "ecrData = ")
@@ -227,6 +237,7 @@ def _try_parse_ecr_data(html: str, week: int) -> list[dict[str, Any]] | None:
                 "tier": tier_i,
                 "projected_points": None,
                 "source": "fantasypros",
+                "horizon": horizon,
                 "week": week,
                 "pulled_at": pulled,
             }
@@ -271,50 +282,81 @@ def _parse_embedded_json(text: str, week: int) -> list[dict[str, Any]]:
     return rows
 
 
-def fetch_fantasypros_rankings(week: int = 1, force_mock: bool = False) -> dict[str, Any]:
+def _fp_url_for_horizon(horizon: str) -> str:
+    if horizon == "weekly":
+        return (
+            os.getenv("FANTASYPROS_WEEKLY_URL", DEFAULT_FP_WEEKLY_URL).strip()
+            or DEFAULT_FP_WEEKLY_URL
+        )
+    return (
+        os.getenv("FANTASYPROS_RANKINGS_URL", DEFAULT_FP_ROS_URL).strip()
+        or DEFAULT_FP_ROS_URL
+    )
+
+
+def fetch_fantasypros_rankings(
+    week: int = 1,
+    force_mock: bool = False,
+    horizon: str = "ros",
+) -> dict[str, Any]:
     """
-    Fetch FantasyPros consensus rankings.
+    Fetch FantasyPros rankings for one horizon (ros | weekly).
 
     Returns {"rankings": [...], "log": {source,status,message}}.
     Live overall ECR is converted to positional ranks so it merges cleanly with Sleeper.
     """
+    horizon = "weekly" if horizon == "weekly" else "ros"
     mode = (os.getenv("RANKINGS_MODE", "live") or "live").strip().lower()
+    src_label = f"fantasypros_{horizon}"
     if force_mock or mode == "mock":
-        rows = _mock_rows(week)
+        rows = _mock_rows(week, horizon=horizon)
         return {
             "rankings": rows,
             "log": {
-                "source": "fantasypros",
+                "source": src_label,
                 "status": "ok",
-                "message": f"Mock FantasyPros rankings loaded ({len(rows)} players).",
+                "message": f"Mock FantasyPros {horizon} rankings loaded ({len(rows)} players).",
             },
         }
 
-    url = os.getenv("FANTASYPROS_RANKINGS_URL", DEFAULT_FP_URL).strip() or DEFAULT_FP_URL
+    url = _fp_url_for_horizon(horizon)
     try:
-        with httpx.Client(timeout=25.0, follow_redirects=True, headers={"User-Agent": "FantasyAnalysis/0.2"}) as client:
+        with httpx.Client(timeout=25.0, follow_redirects=True, headers={"User-Agent": "FantasyAnalysis/0.4"}) as client:
             resp = client.get(url)
             resp.raise_for_status()
-            rows = _parse_rankings_html(resp.text, week)
+            rows = _parse_rankings_html(resp.text, week, horizon=horizon)
+        for row in rows:
+            row["horizon"] = horizon
+            row["source"] = "fantasypros"
         rows = _to_positional_ranks(rows)
         return {
             "rankings": rows,
             "log": {
-                "source": "fantasypros",
+                "source": src_label,
                 "status": "ok",
-                "message": f"Scraped {len(rows)} FantasyPros ranks from consensus sheet.",
+                "message": f"Scraped {len(rows)} FantasyPros {horizon} ranks.",
             },
         }
     except Exception as exc:  # noqa: BLE001
-        rows = _mock_rows(week)
+        rows = _mock_rows(week, horizon=horizon)
         return {
             "rankings": rows,
             "log": {
-                "source": "fantasypros",
+                "source": src_label,
                 "status": "stale",
-                "message": f"Live FantasyPros failed ({exc}); using mock ranks ({len(rows)}).",
+                "message": f"Live FantasyPros {horizon} failed ({exc}); using mock ({len(rows)}).",
             },
         }
+
+
+def fetch_fantasypros_both(week: int = 1, force_mock: bool = False) -> dict[str, Any]:
+    """Pull ROS + weekly FantasyPros boards."""
+    ros = fetch_fantasypros_rankings(week=week, force_mock=force_mock, horizon="ros")
+    weekly = fetch_fantasypros_rankings(week=week, force_mock=force_mock, horizon="weekly")
+    return {
+        "rankings": list(ros.get("rankings") or []) + list(weekly.get("rankings") or []),
+        "logs": [ros["log"], weekly["log"]],
+    }
 
 
 def _to_positional_ranks(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:

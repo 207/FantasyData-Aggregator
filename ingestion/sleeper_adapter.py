@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Sleeper public API adapter — player metadata ranks + trending adds."""
+"""Sleeper public API adapter — ROS search ranks + weekly trending buzz board."""
 
 import os
 from datetime import datetime, timezone
@@ -30,9 +30,11 @@ def _enabled() -> bool:
 
 def fetch_sleeper_rankings(week: int = 1, limit: int = 400) -> dict[str, Any]:
     """
-    Build positional ranks from Sleeper `search_rank` (ADP-ish ordering).
+    Build:
+      - ROS ranks from Sleeper `search_rank` (ADP-ish)
+      - Weekly buzz ranks from trending adds (thin but free signal)
 
-    Free public API — no auth. Falls back to empty list with an error log.
+    Free public API — no auth.
     """
     if not _enabled():
         return {
@@ -59,13 +61,15 @@ def fetch_sleeper_rankings(week: int = 1, limit: int = 400) -> dict[str, Any]:
 
     pulled = datetime.now(timezone.utc)
     try:
-        with httpx.Client(timeout=60.0, headers={"User-Agent": "FantasyAnalysis/0.2"}) as client:
+        with httpx.Client(timeout=60.0, headers={"User-Agent": "FantasyAnalysis/0.4"}) as client:
             players_resp = client.get(SLEEPER_PLAYERS_URL)
             players_resp.raise_for_status()
             players = players_resp.json()
             trending: list[dict[str, Any]] = []
             try:
-                trend_resp = client.get(SLEEPER_TRENDING_URL, params={"lookback_hours": 24, "limit": 25})
+                trend_resp = client.get(
+                    SLEEPER_TRENDING_URL, params={"lookback_hours": 24, "limit": 25}
+                )
                 if trend_resp.status_code == 200:
                     trending = trend_resp.json() or []
             except Exception:  # noqa: BLE001
@@ -90,12 +94,10 @@ def fetch_sleeper_rankings(week: int = 1, limit: int = 400) -> dict[str, Any]:
             name = pdata.get("full_name") or pdata.get("last_name")
             team = pdata.get("team") or ""
             if pos == "DST":
-                # Sleeper defenses usually have no full_name — synthesize ESPN-style label.
                 name = name or (f"{team} D/ST" if team else None)
             if not name:
                 continue
             search_rank = pdata.get("search_rank")
-            # DEF often lacks search_rank; keep team-based entries ordered later by team code.
             if search_rank is None:
                 if pos != "DST" or not team:
                     continue
@@ -108,7 +110,9 @@ def fetch_sleeper_rankings(week: int = 1, limit: int = 400) -> dict[str, Any]:
                     sr = int(search_rank)
                 except (TypeError, ValueError):
                     continue
-            by_pos[pos].append((sr, {"name": name, "position": pos, "sleeper_id": str(pdata.get("player_id", ""))}))
+            by_pos[pos].append(
+                (sr, {"name": name, "position": pos, "sleeper_id": str(pdata.get("player_id", ""))})
+            )
 
         rankings: list[dict[str, Any]] = []
         for pos, items in by_pos.items():
@@ -122,19 +126,41 @@ def fetch_sleeper_rankings(week: int = 1, limit: int = 400) -> dict[str, Any]:
                         "tier": (i - 1) // 6 + 1,
                         "projected_points": None,
                         "source": "sleeper",
+                        "horizon": "ros",
                         "week": week,
                         "pulled_at": pulled,
                         "external_id": meta.get("sleeper_id"),
                     }
                 )
 
-        trend_names = []
+        # Weekly: trending adds as a buzz board (positional order of appearance)
+        trend_names: list[str] = []
+        weekly_by_pos: dict[str, list[dict]] = {}
         for t in trending:
             pid = str(t.get("player_id", ""))
             pdata = (players or {}).get(pid) or {}
             nm = pdata.get("full_name")
+            pos = normalize_position(pdata.get("position") or "")
             if nm:
                 trend_names.append(nm)
+            if nm and pos in by_pos:
+                weekly_by_pos.setdefault(pos, []).append({"name": nm, "position": pos})
+
+        for pos, items in weekly_by_pos.items():
+            for i, meta in enumerate(items, start=1):
+                rankings.append(
+                    {
+                        "name": meta["name"],
+                        "position": pos,
+                        "rank": i,
+                        "tier": (i - 1) // 6 + 1,
+                        "projected_points": None,
+                        "source": "sleeper",
+                        "horizon": "weekly",
+                        "week": week,
+                        "pulled_at": pulled,
+                    }
+                )
 
         return {
             "rankings": rankings,
@@ -142,8 +168,10 @@ def fetch_sleeper_rankings(week: int = 1, limit: int = 400) -> dict[str, Any]:
             "log": {
                 "source": "sleeper",
                 "status": "ok",
-                "message": f"Loaded {len(rankings)} Sleeper positional ranks"
-                + (f"; {len(trend_names)} trending adds." if trend_names else "."),
+                "message": (
+                    f"Loaded {sum(1 for r in rankings if r['horizon']=='ros')} Sleeper ROS ranks"
+                    f"; {len(trend_names)} trending (weekly buzz)."
+                ),
             },
         }
     except Exception as exc:  # noqa: BLE001

@@ -74,12 +74,23 @@ def fetch_espn_league(cfg: dict[str, str] | None = None) -> dict[str, Any]:
             # ESPN returns defense as "D/ST"; normalize to DST so grades/UI match.
             pos = normalize_position(getattr(player, "position", "") or "")
             nfl = getattr(player, "proTeam", "") or getattr(player, "pro_team", "") or ""
-            players[pid] = {
+            proj = getattr(player, "projected_total_points", None)
+            if proj is None:
+                proj = getattr(player, "projected_avg_points", None)
+            if proj is None:
+                proj = getattr(player, "projected_points", None)
+            entry = {
                 "player_id": pid,
                 "name": player.name,
                 "position": pos,
                 "nfl_team": nfl,
             }
+            try:
+                if proj is not None:
+                    entry["projected_points"] = float(proj)
+            except (TypeError, ValueError):
+                pass
+            players[pid] = entry
             lineup_slot_id = getattr(player, "lineupSlot", None)
             if lineup_slot_id is None:
                 lineup_slot_id = getattr(player, "slot_position", None)

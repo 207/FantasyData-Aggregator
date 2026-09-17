@@ -15,6 +15,7 @@ SOURCE_WEIGHTS = {
     "fantasypros": 0.7,
     "fantasypros_mock": 0.7,
     "sleeper": 0.3,
+    "espn": 0.35,
 }
 
 # Map city/franchise phrases → nickname used by ESPN ("Patriots D/ST").
@@ -111,19 +112,25 @@ def normalize_player_name(name: str, position: str | None = None) -> str:
     return text
 
 
+
+
 def build_consensus(
     source_rankings: list[list[dict[str, Any]]],
     week: int,
+    horizon: str = "ros",
 ) -> list[dict[str, Any]]:
     """
-    Average weighted ranks by normalized player name within each position.
+    Average weighted ranks by normalized player name within each position + horizon.
 
-    Each input row needs: name, position, rank, source.
-    Output rows include consensus_rank (1..n within position), avg_rank, sources.
+    Each input row needs: name, position, rank, source. Optional horizon (default ros).
     """
+    horizon = "weekly" if horizon == "weekly" else "ros"
     buckets: dict[tuple[str, str], dict[str, Any]] = {}
     for rows in source_rankings:
         for row in rows:
+            row_h = row.get("horizon") or "ros"
+            if row_h != horizon:
+                continue
             name = row.get("name") or ""
             pos = normalize_position(row.get("position") or "")
             if not name or not pos or pos in {"BE", "IR", "FLEX"}:
@@ -166,6 +173,7 @@ def build_consensus(
                 "avg_rank": round(avg, 2),
                 "sources": ",".join(entry["sources"]),
                 "source": "consensus",
+                "horizon": horizon,
                 "week": week,
                 "pulled_at": pulled,
             }
@@ -177,6 +185,15 @@ def build_consensus(
         for i, item in enumerate(items, start=1):
             consensus.append({**item, "rank": i, "tier": (i - 1) // 6 + 1})
     return consensus
+
+
+def build_consensus_both(
+    source_rankings: list[list[dict[str, Any]]],
+    week: int,
+) -> list[dict[str, Any]]:
+    return build_consensus(source_rankings, week, horizon="ros") + build_consensus(
+        source_rankings, week, horizon="weekly"
+    )
 
 
 def index_rankings_by_name(rankings: list[dict[str, Any]]) -> dict[tuple[str, str], dict[str, Any]]:

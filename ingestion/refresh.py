@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-"""Orchestrate league + rankings refresh into one payload for SQLite."""
+"""Orchestrate league + rankings + news refresh into one payload for SQLite."""
 
 from typing import Any
 
-from ingestion.consensus import build_consensus, normalize_player_name
+from ingestion.consensus import build_consensus_both, normalize_player_name
 from ingestion.espn_adapter import fetch_league as fetch_league_core
-from ingestion.fantasypros_adapter import fetch_fantasypros_rankings
+from ingestion.espn_rankings import rankings_from_espn_players
+from ingestion.fantasypros_adapter import fetch_fantasypros_both
+from ingestion.news_adapter import fetch_news_and_injuries
 from ingestion.positions import normalize_position
 from ingestion.sleeper_adapter import fetch_sleeper_rankings
 
@@ -23,44 +25,67 @@ def _attach_player_ids(rankings: list[dict[str, Any]], players: list[dict[str, A
     for row in rankings:
         pos = normalize_position(row.get("position") or "")
         key = (normalize_player_name(row.get("name") or "", pos), pos)
-        pid = by_name.get(key) or row.get("name") or ""
+        pid = by_name.get(key) or row.get("player_id") or row.get("name") or ""
         out.append({**row, "player_id": pid})
     return out
 
 
 def fetch_league(force_demo: bool = False) -> dict[str, Any]:
-    """Pull ESPN/demo league plus FantasyPros/Sleeper consensus rankings."""
+    """Pull ESPN/demo league plus multi-source weekly/ROS rankings and news."""
     payload = fetch_league_core(force_demo=force_demo)
     week = int(payload.get("current_week") or 1)
+    players = payload.get("players") or []
 
-    fp = fetch_fantasypros_rankings(week=week)
+    fp = fetch_fantasypros_both(week=week)
     sl = fetch_sleeper_rankings(week=week)
 
+    espn_weekly = rankings_from_espn_players(players, week=week, horizon="weekly")
+    espn_ros = rankings_from_espn_players(players, week=week, horizon="ros")
+    espn_rows = espn_weekly + espn_ros
+    espn_log = {
+        "source": "espn_projections",
+        "status": "ok" if espn_rows else "stale",
+        "message": (
+            f"Built {len(espn_weekly)} weekly + {len(espn_ros)} ROS ranks from ESPN projected points."
+            if espn_rows
+            else "No ESPN projected points on roster/FA — third source skipped."
+        ),
+    }
+
+    news_bundle = fetch_news_and_injuries(players)
+
     logs = list(payload.get("refresh_logs") or [])
-    logs.append(fp["log"])
+    logs.extend(fp.get("logs") or [])
     logs.append(sl["log"])
+    logs.append(espn_log)
+    logs.extend(news_bundle.get("logs") or [])
 
-    consensus = build_consensus([fp.get("rankings") or [], sl.get("rankings") or []], week=week)
-    # Store both consensus and raw sources for transparency
+    source_lists = [
+        fp.get("rankings") or [],
+        sl.get("rankings") or [],
+        espn_rows,
+    ]
+    consensus = build_consensus_both(source_lists, week=week)
+
     all_rows = list(consensus)
-    for row in fp.get("rankings") or []:
-        all_rows.append(row)
-    for row in sl.get("rankings") or []:
-        all_rows.append(row)
+    for rows in source_lists:
+        all_rows.extend(rows)
 
-    all_rows = _attach_player_ids(all_rows, payload.get("players") or [])
+    all_rows = _attach_player_ids(all_rows, players)
     payload["rankings"] = all_rows
-    payload["consensus_rankings"] = [r for r in all_rows if r.get("source") == "consensus"]
+    payload["news"] = news_bundle.get("news") or []
     payload["trending"] = sl.get("trending") or []
-    # Demo/ESPN free agents stay on the league payload; also expose for UI.
     payload.setdefault("free_agents", payload.get("free_agents") or [])
     payload["refresh_logs"] = logs
+
+    ros_n = sum(1 for r in consensus if r.get("horizon") == "ros")
+    wk_n = sum(1 for r in consensus if r.get("horizon") == "weekly")
     if consensus:
         logs.append(
             {
                 "source": "consensus",
                 "status": "ok",
-                "message": f"Built consensus board with {len(consensus)} players.",
+                "message": f"Built consensus: {ros_n} ROS + {wk_n} weekly players.",
             }
         )
     else:

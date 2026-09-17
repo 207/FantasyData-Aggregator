@@ -23,6 +23,7 @@ class Ranking(SQLModel, table=True):
     player_name: str = ""
     position: str = ""
     source: str
+    horizon: str = "ros"  # ros | weekly
     week: int
     rank: int
     tier: Optional[int] = None
@@ -35,9 +36,11 @@ class NewsItem(SQLModel, table=True):
 
     id: Optional[int] = Field(default=None, primary_key=True)
     player_id: str = Field(index=True)
+    player_name: str = ""
     source: str
     headline: str
     body: str = ""
+    injury_flag: str = ""
     published_at: Optional[datetime] = None
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import sys
 from pathlib import Path
 
@@ -11,26 +12,28 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-# Streamlit often re-runs app.py without reloading analysis/* after edits —
-# force-reload so new kwargs (e.g. hunt_positions) always match.
-from analysis import roster_grader, trade_finder, waiver_finder
+from analysis import recommendations as recommendations_mod
+from analysis import trade_finder as trade_finder_mod
+from analysis import waiver_finder as waiver_finder_mod
+from analysis import weakness as weakness_mod
+from analysis.llm_client import describe_setup
 
-roster_grader = importlib.reload(roster_grader)
-trade_finder = importlib.reload(trade_finder)
-waiver_finder = importlib.reload(waiver_finder)
+recommendations_mod = importlib.reload(recommendations_mod)
+trade_finder_mod = importlib.reload(trade_finder_mod)
+waiver_finder_mod = importlib.reload(waiver_finder_mod)
+weakness_mod = importlib.reload(weakness_mod)
 
-grade_roster = roster_grader.grade_roster
-CORE_POS = trade_finder.CORE_POS
-find_trade_targets = trade_finder.find_trade_targets
-find_waiver_pickups = waiver_finder.find_waiver_pickups
+generate_recommendations = recommendations_mod.generate_recommendations
+CORE_POS = trade_finder_mod.CORE_POS
+HUNT_POS_OPTIONS = trade_finder_mod.HUNT_POS_OPTIONS
+DEFAULT_HUNT_POS = trade_finder_mod.DEFAULT_HUNT_POS
+skill_free_agents = waiver_finder_mod.skill_free_agents
+weakness_flags_for_team = weakness_mod.weakness_flags_for_team
+all_team_weakness_flags = weakness_mod.all_team_weakness_flags
 
 from ingestion.espn_adapter import espn_configured, load_config
 from ingestion.refresh import fetch_league
 from storage.db import init_db, load_dashboard, upsert_league_snapshot
-
-# Keep UI options local so Streamlit hot-reload never races a stale trade_finder.
-HUNT_POS_OPTIONS = ("QB", "RB", "WR", "TE", "DST", "K")
-DEFAULT_HUNT_POS = tuple(CORE_POS)
 
 st.set_page_config(
     page_title="FantasyAnalysis",
@@ -56,10 +59,31 @@ def status_badge(mode: str) -> str:
     return "🟡 Demo mode"
 
 
+def _rank_table(ranking_rows, *, horizon: str, source_filter: str | None = None) -> pd.DataFrame:
+    rows = []
+    for r in ranking_rows:
+        h = getattr(r, "horizon", None) or "ros"
+        if h != horizon:
+            continue
+        src = getattr(r, "source", "") or ""
+        if source_filter and src != source_filter:
+            continue
+        rows.append(
+            {
+                "Rank": r.rank,
+                "Player": r.player_name or r.player_id,
+                "Pos": r.position or "—",
+                "Tier": r.tier if r.tier is not None else "—",
+                "Source": src,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 def main() -> None:
     st.title("FantasyAnalysis")
     st.caption(
-        "Local ESPN fantasy league analyzer — roster, grades, trades, and waivers."
+        "ESPN league data + multi-source weekly/ROS ranks + news → LLM trade & waiver ideas."
     )
 
     cfg = load_config()
@@ -72,7 +96,7 @@ def main() -> None:
         )
         st.caption(f"Rankings mode: **{cfg.get('rankings_mode', 'live')}**")
         if st.button("Refresh Data", type="primary", use_container_width=True):
-            with st.spinner("Pulling league + rankings…"):
+            with st.spinner("Pulling league, rankings, news…"):
                 ensure_data(force_refresh=True)
             st.success("Refresh complete.")
             st.rerun()
@@ -85,12 +109,10 @@ def main() -> None:
         st.subheader("Connect ESPN")
         st.markdown(
             "Copy `config/.env.example` → `config/.env` and set `LEAGUE_ID`, `YEAR`, "
-            "`SWID`, and `ESPN_S2` from fantasy.espn.com cookies. Then hit **Refresh Data**."
+            "`SWID`, and `ESPN_S2` from fantasy.espn.com cookies. Then **Refresh Data**."
         )
-        st.markdown(
-            "Optional rankings: `RANKINGS_MODE=live|mock`, `SLEEPER_ENABLED=true`, "
-            "`FANTASYPROS_RANKINGS_URL=…`."
-        )
+        st.subheader("LLM")
+        st.caption(describe_setup())
         if cfg.get("team_name"):
             st.caption(f"Preferred team: **{cfg['team_name']}**")
 
@@ -108,308 +130,322 @@ def main() -> None:
     ranking_rows = dash.get("rankings") or []
     free_agents = dash.get("free_agents") or []
     trending = dash.get("trending") or []
+    news_items = dash.get("news") or []
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("League", meta.league_name or meta.league_id)
     c2.metric("Week", meta.current_week)
     c3.metric("Season", meta.year)
     c4.metric("Source", status_badge(meta.source_mode))
-
     st.caption(f"Last refreshed: {meta.refreshed_at}")
 
-    team_names = sorted({r.team_name for r in rosters}) or sorted({s.team_name for s in standings})
+    team_names = sorted({r.team_name for r in rosters}) or sorted(
+        {s.team_name for s in standings}
+    )
     preferred = cfg.get("team_name") or (team_names[0] if team_names else "")
     default_idx = team_names.index(preferred) if preferred in team_names else 0
 
-    consensus_for_grade: list[dict] = []
-    consensus_table: list[dict] = []
+    ros_for_flags = []
     for r in ranking_rows:
+        if getattr(r, "horizon", "ros") != "ros":
+            continue
         if r.source != "consensus":
             continue
-        player = players.get(r.player_id)
-        name = (r.player_name or (player.name if player else "") or str(r.player_id)).strip()
-        pos = (r.position or (player.position if player else "") or "").strip()
-        consensus_for_grade.append(
-            {"name": name, "position": pos or "?", "rank": r.rank, "tier": r.tier, "source": "consensus"}
+        ros_for_flags.append(
+            {
+                "name": r.player_name or r.player_id,
+                "position": r.position,
+                "rank": r.rank,
+                "tier": r.tier,
+                "source": "consensus",
+                "horizon": "ros",
+            }
         )
-        consensus_table.append({"Rank": r.rank, "Player": name, "Pos": pos or "—", "Tier": r.tier or "—"})
+    if not ros_for_flags:
+        for r in ranking_rows:
+            if getattr(r, "horizon", "ros") != "ros":
+                continue
+            ros_for_flags.append(
+                {
+                    "name": r.player_name or r.player_id,
+                    "position": r.position,
+                    "rank": r.rank,
+                    "source": r.source,
+                    "horizon": "ros",
+                }
+            )
 
-    tab_roster, tab_standings, tab_matchups, tab_grades, tab_trades, tab_waivers, tab_ranks, tab_status = st.tabs(
+    (
+        tab_league,
+        tab_ranks,
+        tab_news,
+        tab_weak,
+        tab_recs,
+        tab_status,
+    ) = st.tabs(
         [
-            "Roster",
-            "Standings",
-            "Matchups",
-            "Positional grades",
-            "Trade targets",
-            "Waiver pickups",
-            "Consensus ranks",
+            "League",
+            "Rankings",
+            "Injuries / news",
+            "Weakness flags",
+            "LLM recommendations",
             "Source status",
         ]
     )
 
-    with tab_roster:
-        if not team_names:
-            st.info("No rosters in the current snapshot.")
-        else:
-            team = st.selectbox("Team", team_names, index=default_idx)
-            rows = []
-            for r in rosters:
-                if r.team_name != team:
-                    continue
-                p = players.get(r.player_id)
-                rows.append(
-                    {
-                        "Slot": r.slot,
-                        "Lineup": r.lineup_slot or "—",
-                        "Player": p.name if p else r.player_id,
-                        "Pos": p.position if p else "—",
-                        "NFL": p.nfl_team if p else "—",
-                    }
-                )
-            df = pd.DataFrame(rows)
-            if not df.empty:
-                order = {"starter": 0, "bench": 1, "IR": 2}
-                df["_o"] = df["Slot"].map(lambda s: order.get(s, 9))
-                df = df.sort_values(["_o", "Pos", "Player"]).drop(columns=["_o"])
-            st.dataframe(df, use_container_width=True, hide_index=True)
-
-    with tab_standings:
-        srows = [
-            {
-                "Team": s.team_name,
-                "W": s.wins,
-                "L": s.losses,
-                "T": s.ties,
-                "PF": round(s.points_for, 1),
-                "PA": round(s.points_against, 1),
-            }
-            for s in standings
-        ]
-        sdf = pd.DataFrame(srows)
-        if not sdf.empty:
-            sdf = sdf.sort_values(["W", "PF"], ascending=[False, False])
-        st.dataframe(sdf, use_container_width=True, hide_index=True)
-
-    with tab_matchups:
-        mrows = [
-            {
-                "Week": m.week,
-                "Home": m.home_team_name,
-                "Home score": round(m.home_score, 1),
-                "Away": m.away_team_name,
-                "Away score": round(m.away_score, 1),
-            }
-            for m in matchups
-        ]
-        st.dataframe(pd.DataFrame(mrows), use_container_width=True, hide_index=True)
-        if not mrows:
-            st.info("No matchups for this week yet.")
-
-    with tab_grades:
-        st.markdown(
-            "Grades blend FantasyPros + Sleeper consensus ranks vs positional replacement level. "
-            "If rankings are unavailable, depth-only grades are shown."
-        )
-        if not team_names:
-            st.info("Pick a team after data loads.")
-        else:
-            grade_team = st.selectbox("Grade team", team_names, index=default_idx, key="grade_team")
-            grades = grade_roster(grade_team, rosters, players, consensus_for_grade)
-            if not grades:
-                st.info("No positional grades for this team.")
+    with tab_league:
+        sub_r, sub_s, sub_m, sub_fa = st.tabs(["Roster", "Standings", "Matchups", "Free agents"])
+        with sub_r:
+            if not team_names:
+                st.info("No rosters in the current snapshot.")
             else:
-                # Compact summary — long "why" text is clipped in st.dataframe cells,
-                # so full explanations render below as wrapped markdown.
-                summary = pd.DataFrame(
-                    [
+                team = st.selectbox("Team", team_names, index=default_idx)
+                rows = []
+                for r in rosters:
+                    if r.team_name != team:
+                        continue
+                    p = players.get(r.player_id)
+                    rows.append(
                         {
-                            "Pos": g["position"],
-                            "Grade": g["grade"],
-                            "Count": g["count"],
-                            "Best rank": g.get("best_rank") if g.get("best_rank") is not None else "—",
-                            "Players": g["players"],
+                            "Slot": r.slot,
+                            "Lineup": r.lineup_slot or "—",
+                            "Player": p.name if p else r.player_id,
+                            "Pos": p.position if p else "—",
+                            "NFL": p.nfl_team if p else "—",
                         }
-                        for g in grades
-                    ]
-                )
-                st.dataframe(summary, use_container_width=True, hide_index=True)
-                st.markdown("##### Why")
-                for g in grades:
-                    why = (g.get("why") or "").strip() or "—"
-                    st.markdown(f"**{g['position']} — {g['grade']}.** {why}")
-
-    with tab_trades:
-        st.markdown(
-            "Pick positions to **hunt** (default RB / WR / TE). Suggestions prefer "
-            "counterparties who are **Weak where you have surplus**, so you can fill "
-            "*their* hole while upgrading the slots you selected — even if you already "
-            "grade Strong there. Readable why text below the table."
-        )
-        if not team_names:
-            st.info("Pick a team after data loads.")
-        elif not consensus_for_grade:
-            st.warning("No consensus rankings yet — refresh data or check Source status.")
-        else:
-            trade_team = st.selectbox(
-                "Your team", team_names, index=default_idx, key="trade_team"
-            )
-            trade_hunt = st.multiselect(
-                "Hunt positions",
-                options=list(HUNT_POS_OPTIONS),
-                default=list(DEFAULT_HUNT_POS),
-                key="trade_hunt_pos",
-                help="Default is all skill (RB/WR/TE). Add QB/DST/K only if you want those upgrades.",
-            )
-            if not trade_hunt:
-                st.info("Select at least one hunt position.")
+                    )
+                df = pd.DataFrame(rows)
+                if not df.empty:
+                    order = {"starter": 0, "bench": 1, "IR": 2}
+                    df["_o"] = df["Slot"].map(lambda s: order.get(s, 9))
+                    df = df.sort_values(["_o", "Pos", "Player"]).drop(columns=["_o"])
+                st.dataframe(df, use_container_width=True, hide_index=True)
+        with sub_s:
+            srows = [
+                {
+                    "Team": s.team_name,
+                    "W": s.wins,
+                    "L": s.losses,
+                    "T": s.ties,
+                    "PF": round(s.points_for, 1),
+                    "PA": round(s.points_against, 1),
+                }
+                for s in standings
+            ]
+            sdf = pd.DataFrame(srows)
+            if not sdf.empty:
+                sdf = sdf.sort_values(["W", "PF"], ascending=[False, False])
+            st.dataframe(sdf, use_container_width=True, hide_index=True)
+        with sub_m:
+            mrows = [
+                {
+                    "Week": m.week,
+                    "Home": m.home_team_name,
+                    "Home score": round(m.home_score, 1),
+                    "Away": m.away_team_name,
+                    "Away score": round(m.away_score, 1),
+                }
+                for m in matchups
+            ]
+            st.dataframe(pd.DataFrame(mrows), use_container_width=True, hide_index=True)
+            if not mrows:
+                st.info("No matchups for this week yet.")
+        with sub_fa:
+            fa_df = pd.DataFrame(skill_free_agents(free_agents, list(CORE_POS), limit=80))
+            if fa_df.empty:
+                st.info("No skill-position free agents in snapshot.")
             else:
-                trades = find_trade_targets(
-                    trade_team,
-                    rosters,
-                    players,
-                    consensus_for_grade,
-                    limit=12,
-                    hunt_positions=trade_hunt,
-                )
-                if not trades:
-                    st.info(
-                        "No ranked upgrades at the selected positions. "
-                        "Try widening the hunt list, or counterparts may lack surplus."
-                    )
-                else:
-                    summary = pd.DataFrame(
-                        [
-                            {
-                                "Player": t["player"],
-                                "Pos": t["position"],
-                                "Owner": t["owner"],
-                                "Rank": t["rank"],
-                                "Your best": (
-                                    f"{t['your_best']} #{t['your_best_rank']}"
-                                    if t.get("your_best_rank") is not None
-                                    else "—"
-                                ),
-                                "Their needs": t.get("their_needs") or "—",
-                                "Owner depth": t["owner_depth"],
-                                "Offer hint": t.get("offer_hint") or "—",
-                            }
-                            for t in trades
-                        ]
-                    )
-                    # Wide Offer hint + taller rows so long cells are reachable via
-                    # horizontal/vertical dataframe scroll (not clipped mid-sentence).
-                    st.dataframe(
-                        summary,
-                        hide_index=True,
-                        width="stretch",
-                        height=min(420, 56 + 68 * max(len(summary), 1)),
-                        row_height=68,
-                        column_config={
-                            "Player": st.column_config.Column(width="medium"),
-                            "Pos": st.column_config.Column(width="small"),
-                            "Owner": st.column_config.Column(width="medium"),
-                            "Rank": st.column_config.NumberColumn(width="small"),
-                            "Your best": st.column_config.Column(width="medium"),
-                            "Their needs": st.column_config.Column(
-                                width="medium",
-                                help="Positions where this owner is Weak/Average and you have Strong surplus.",
-                            ),
-                            "Owner depth": st.column_config.NumberColumn(width="small"),
-                            "Offer hint": st.column_config.TextColumn(
-                                "Offer hint",
-                                width=560,
-                                help="Suggested surplus piece to offer — scroll sideways if truncated.",
-                            ),
-                        },
-                    )
-                    st.markdown("##### Why")
-                    for t in trades:
-                        why = (t.get("why") or "").strip() or "—"
-                        st.markdown(
-                            f"**{t['player']} ({t['position']}) — {t['owner']}.** {why}"
-                        )
-
-    with tab_waivers:
-        st.markdown(
-            "Pick positions to shop on waivers (default RB / WR / TE). Free agents are "
-            "filtered to those slots and ranked by consensus; Sleeper trending adds get a "
-            "boost. Works even when your roster already grades Strong at the hunt position."
-        )
-        if not team_names:
-            st.info("Pick a team after data loads.")
-        elif not consensus_for_grade:
-            st.warning("No consensus rankings yet — refresh data or check Source status.")
-        else:
-            waiver_team = st.selectbox(
-                "Your team", team_names, index=default_idx, key="waiver_team"
-            )
-            waiver_hunt = st.multiselect(
-                "Hunt positions",
-                options=list(HUNT_POS_OPTIONS),
-                default=list(DEFAULT_HUNT_POS),
-                key="waiver_hunt_pos",
-                help="Default is all skill (RB/WR/TE).",
-            )
-            if not waiver_hunt:
-                st.info("Select at least one hunt position.")
-            else:
-                pickups = find_waiver_pickups(
-                    waiver_team,
-                    rosters,
-                    players,
-                    consensus_for_grade,
-                    free_agents=free_agents,
-                    trending_names=trending,
-                    limit=15,
-                    hunt_positions=waiver_hunt,
-                )
-                if trending:
-                    st.caption(
-                        "Sleeper trending: "
-                        + ", ".join(trending[:12])
-                        + ("…" if len(trending) > 12 else "")
-                    )
-                if not pickups:
-                    st.info(
-                        "No ranked free-agent upgrades at the selected positions. "
-                        "Try Refresh Data after waivers process, or widen the hunt list."
-                    )
-                else:
-                    summary = pd.DataFrame(
-                        [
-                            {
-                                "Player": p["player"],
-                                "Pos": p["position"],
-                                "NFL": p.get("nfl_team") or "—",
-                                "Rank": p["rank"],
-                                "Your best": (
-                                    f"{p['your_best']} #{p['your_best_rank']}"
-                                    if p.get("your_best_rank") is not None
-                                    else "—"
-                                ),
-                                "Trending": "Yes" if p.get("trending") else "—",
-                            }
-                            for p in pickups
-                        ]
-                    )
-                    st.dataframe(summary, use_container_width=True, hide_index=True)
-                    st.markdown("##### Why")
-                    for p in pickups:
-                        why = (p.get("why") or "").strip() or "—"
-                        st.markdown(f"**{p['player']} ({p['position']}).** {why}")
+                st.dataframe(fa_df, use_container_width=True, hide_index=True)
+            if trending:
+                st.caption("Sleeper trending: " + ", ".join(trending[:15]))
 
     with tab_ranks:
-        st.markdown("Consensus board (FantasyPros weighted with Sleeper search ranks).")
-        if not consensus_table:
-            st.info("No consensus rankings in the latest refresh — check Source status.")
+        st.markdown(
+            "Weekly vs rest-of-season boards from FantasyPros + Sleeper "
+            "(+ ESPN projected points when available). Persist separately; switch below."
+        )
+        horizon = st.radio("Horizon", ["ros", "weekly"], horizontal=True, format_func=lambda x: "ROS" if x == "ros" else "Weekly")
+        source = st.selectbox(
+            "Source",
+            ["consensus", "fantasypros", "fantasypros_mock", "sleeper", "espn", "all"],
+            index=0,
+        )
+        if source == "all":
+            rdf = _rank_table(ranking_rows, horizon=horizon)
         else:
-            cdf = pd.DataFrame(consensus_table)
-            positions = sorted({r["Pos"] for r in consensus_table if r["Pos"] != "—"})
+            rdf = _rank_table(ranking_rows, horizon=horizon, source_filter=source)
+        if rdf.empty:
+            st.info("No rankings for this horizon/source — try Refresh Data.")
+        else:
+            positions = sorted({p for p in rdf["Pos"].tolist() if p != "—"})
             default_pos = [p for p in ["QB", "RB", "WR", "TE", "DST", "K"] if p in positions] or positions
             pos_filter = st.multiselect("Positions", positions, default=default_pos)
             if pos_filter:
-                cdf = cdf[cdf["Pos"].isin(pos_filter)]
-            st.dataframe(cdf.sort_values(["Pos", "Rank"]), use_container_width=True, hide_index=True)
+                rdf = rdf[rdf["Pos"].isin(pos_filter)]
+            st.dataframe(
+                rdf.sort_values(["Pos", "Rank", "Source"]),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+    with tab_news:
+        st.markdown(
+            "News from **ESPN public site API** (`site.api.espn.com`) + injury flags from "
+            "**Sleeper** `injury_status`. Attached to players when names match."
+        )
+        nrows = [
+            {
+                "Flag": getattr(n, "injury_flag", "") or "—",
+                "Player": getattr(n, "player_name", "") or "—",
+                "Source": n.source,
+                "Headline": n.headline,
+            }
+            for n in news_items
+        ]
+        if not nrows:
+            st.info("No news/injury items yet — Refresh Data.")
+        else:
+            st.dataframe(pd.DataFrame(nrows), use_container_width=True, hide_index=True)
+
+    with tab_weak:
+        st.markdown(
+            "Simple positional weakness from **ROS depth vs starter slots** "
+            "(ESPN `roster_slots` when present). Trade-relevant = RB/WR/TE Weak/Thin only."
+        )
+        if not team_names:
+            st.info("No teams loaded.")
+        else:
+            scope = st.radio("Scope", ["Your team", "All teams"], horizontal=True)
+            if scope == "Your team":
+                wt = st.selectbox("Team", team_names, index=default_idx, key="weak_team")
+                flags = weakness_flags_for_team(
+                    wt, rosters, players, ros_for_flags, meta.roster_slots
+                )
+            else:
+                flags = all_team_weakness_flags(
+                    team_names, rosters, players, ros_for_flags, meta.roster_slots
+                )
+            only_trade = st.checkbox("Trade-relevant only (RB/WR/TE Weak/Thin)", value=False)
+            if only_trade:
+                flags = [f for f in flags if f.get("trade_relevant")]
+            fdf = pd.DataFrame(
+                [
+                    {
+                        "Team": f["team"],
+                        "Pos": f["position"],
+                        "Level": f["level"],
+                        "Slots": f["starter_slots"],
+                        "Rostered": f["rostered"],
+                        "Startable": f["startable"],
+                        "Best": f.get("best_player") or "—",
+                        "Best ROS": f["best_rank"] if f.get("best_rank") is not None else "—",
+                        "Why": f["why"],
+                    }
+                    for f in flags
+                ]
+            )
+            st.dataframe(fdf, use_container_width=True, hide_index=True)
+
+    with tab_recs:
+        st.markdown(
+            "Builds structured league context (rosters, weekly + ROS ranks, injuries, "
+            "weakness flags, hunt positions) and asks the LLM for trade + waiver ideas. "
+            "**Never recommends QB/DST/K trades.** Start/sit uses weekly ranks when included."
+        )
+        if not team_names:
+            st.info("Load league data first.")
+        else:
+            rec_team = st.selectbox("Your team", team_names, index=default_idx, key="rec_team")
+            hunt = st.multiselect(
+                "Hunt positions (passed to LLM)",
+                options=list(HUNT_POS_OPTIONS),
+                default=list(DEFAULT_HUNT_POS),
+                key="rec_hunt",
+            )
+            include_ss = st.checkbox("Include start/sit", value=True)
+            if st.button("Generate recommendations", type="primary"):
+                with st.spinner("Calling LLM…"):
+                    out = generate_recommendations(
+                        team_name=rec_team,
+                        hunt_positions=hunt,
+                        meta=meta,
+                        rosters=rosters,
+                        players=players,
+                        standings=standings,
+                        rankings=ranking_rows,
+                        free_agents=free_agents,
+                        news_items=news_items,
+                        include_start_sit=include_ss,
+                    )
+                st.session_state["llm_recs"] = out
+
+            out = st.session_state.get("llm_recs")
+            if out:
+                if out.get("ok") and out.get("result"):
+                    res = out["result"]
+                    if res.get("notes"):
+                        st.info(res["notes"])
+                    st.subheader("Trades")
+                    trades = res.get("trades") or []
+                    if not trades:
+                        st.write("No trades returned.")
+                    else:
+                        for t in trades:
+                            get = ", ".join(t.get("you_get") or []) or "—"
+                            send = ", ".join(t.get("you_send") or []) or "—"
+                            st.markdown(
+                                f"**You get {get}** ← send **{send}** to **{t.get('partner') or '?'}**  \n"
+                                f"{t.get('why') or ''}"
+                            )
+                    st.subheader("Waivers")
+                    waivers = res.get("waivers") or []
+                    if not waivers:
+                        st.write("No waivers returned.")
+                    else:
+                        wdf = pd.DataFrame(
+                            [
+                                {
+                                    "Add": w.get("add"),
+                                    "Drop": w.get("drop") or "—",
+                                    "Pos": w.get("position") or "—",
+                                    "Why": w.get("why") or "",
+                                }
+                                for w in waivers
+                                if isinstance(w, dict)
+                            ]
+                        )
+                        st.dataframe(wdf, use_container_width=True, hide_index=True)
+                    if include_ss:
+                        st.subheader("Start / sit")
+                        ss = res.get("start_sit") or []
+                        if not ss:
+                            st.write("No start/sit returned.")
+                        else:
+                            sdf = pd.DataFrame(
+                                [
+                                    {
+                                        "Start": s.get("start"),
+                                        "Sit": s.get("sit"),
+                                        "Pos": s.get("position") or "—",
+                                        "Why": s.get("why") or "",
+                                    }
+                                    for s in ss
+                                    if isinstance(s, dict)
+                                ]
+                            )
+                            st.dataframe(sdf, use_container_width=True, hide_index=True)
+                else:
+                    st.error(out.get("error") or "LLM unavailable")
+                    st.markdown(f"**Setup:** {out.get('setup') or describe_setup()}")
+                    st.caption(
+                        "Weakness flags and rankings still work without an LLM — "
+                        "see other tabs."
+                    )
+                with st.expander("Context sent to LLM (JSON)"):
+                    st.code(
+                        json.dumps(out.get("context") or {}, indent=2, default=str)[:12000],
+                        language="json",
+                    )
 
     with tab_status:
         st.markdown("Adapter health from the last refresh — failures degrade to mock/cache.")

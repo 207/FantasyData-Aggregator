@@ -2,44 +2,37 @@
 
 ## Scope
 
-Local single-user fantasy football analyzer: pull ESPN league data, grade the roster, and recommend trades/waivers with clear reasons. Read-only against ESPN; runs on your machine.
+Local single-user fantasy football analyzer: ESPN league pull, multi-source **weekly + ROS** rankings, news/injuries, basic weakness flags, and **LLM recommendations** (Ollama-first). Read-only against ESPN; runs on your machine.
 
-Source of truth: `docs/fantasy-football-analyzer-design.md` (repo).
+## Architecture (locked 2026-09-16)
 
-## Phase 1 — shipped
+**Keep / improve**
 
-End-to-end local app:
+1. ESPN league pull — roster, standings, matchups, FA, roster slots
+2. Rankings — weekly **and** ROS from FantasyPros + Sleeper (+ ESPN projections as third)
+3. News / injury — ESPN public news API + Sleeper injury flags
+4. Basic weakness flags — ROS depth vs starter slots
+5. LLM recommendations — structured JSON context → trades + waivers (+ optional start/sit)
 
-- Streamlit dashboard with roster, standings, and matchup views
-- SQLite persistence for league meta + roster snapshots
-- ESPN adapter via `espn_api` when `SWID` / `espn_s2` / league id are set
-- Demo mode with sample league data when ESPN credentials are absent
-- Manual **Refresh Data** that reloads adapters and rewrites SQLite
-- D/ST position normalization (`D/ST` → `DST`) so defense grades correctly
+**Nuked**
 
-## Phase 2 — shipped
+- Heavy analytical trade finder (fairness engines, package constructors, long heuristics)
+- Never recommend QB / DST / K trades
 
-- FantasyPros adapter (live scrape + mock fallback)
-- Sleeper adapter (public search-rank board + trending adds log)
-- Consensus rankings (weighted FP + Sleeper) persisted in SQLite
-- Positional roster grades vs replacement level (depth fallback if ranks missing)
-- UI: **Consensus ranks** tab + richer grade “why”
-- Config: `RANKINGS_MODE`, `SLEEPER_ENABLED`, `FANTASYPROS_RANKINGS_URL`
+**LLM runtime**
 
-## Phase 3 — shipped (this slice)
+- Default: Ollama (`OLLAMA_BASE_URL`, `OLLAMA_MODEL`)
+- Optional: OpenAI / Anthropic via user API keys
+- Graceful error if no LLM (UI still shows data + setup instructions)
 
-- Trade target finder: prefers RB/WR/TE (Weak then Average / FLEX depth); QB/DST/K only for clear holes with elite upgrades — avoids streaming-slot spam; surplus depth + offer hint from Strong (preferably skill) spots
-- Waiver finder: ESPN/demo free-agent pool merged with unrostered consensus names; Sleeper trending boost
-- Free agents + trending persisted on league meta (`free_agents_json`, `trending_json`)
-- UI: **Trade targets** and **Waiver pickups** tabs with full readable “why” (same pattern as grades)
-- Demo FA pool + mock ranks for offline recommendations
+## Phases shipped
 
-## Phase 3.1 — shipped (position hunt + counterparty-first)
-
-- **Hunt positions** multi-select on Trade targets + Waiver pickups (default RB/WR/TE)
-- Trades no longer require your hunt position to be Weak — shop upgrades even when Strong
-- Matchmaking prioritizes owners who are Weak/Average where *you* have Strong surplus (“fill their hole”)
-- Waivers filter strictly by selected positions; why text reflects hunt + counterparty strategy
+| Phase | Status |
+|---|---|
+| 1 — ESPN + Streamlit + SQLite | shipped |
+| 2 — FantasyPros + Sleeper + consensus | shipped (extended to weekly/ROS) |
+| 3 / 3.1 — Analytical trades/waivers | **gutted** — replaced by LLM path |
+| **4 — LLM-recs pivot** | **this slice** |
 
 ## Stack
 
@@ -47,11 +40,14 @@ End-to-end local app:
 |---|---|
 | Language | Python 3.11+ |
 | UI | Streamlit |
-| League data | `espn_api` (+ demo fallback) |
-| Rankings | FantasyPros scrape + Sleeper API (+ mock) |
+| League | `espn_api` (+ demo) |
+| Rankings | FantasyPros scrape + Sleeper + ESPN proj |
+| News | ESPN site API + Sleeper injuries |
+| LLM | Ollama / OpenAI / Anthropic |
 | Storage | SQLite via `sqlmodel` |
-| Config | `.env` (gitignored) for ESPN cookies / league id / year / rankings |
 
-## Next steps
+## Next (optional)
 
-1. **Phase 4** — News/injury flags, historical charts, optional weekly auto-refresh
+- Remote Ollama on Windows RTX 3070
+- Richer start/sit dedicated prompt
+- Historical charts / weekly auto-refresh
