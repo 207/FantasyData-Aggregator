@@ -12,7 +12,7 @@ Design notes: [`docs/fantasy-football-analyzer-design.md`](docs/fantasy-football
 | Rankings | **Weekly** and **ROS** from FantasyPros + Sleeper (+ ESPN projected points when present) |
 | News / injury | ESPN public news API + Sleeper `injury_status` |
 | Weakness flags | Simple ROS depth vs starter slots (no package math) |
-| LLM recs | Structured JSON context → trades + waivers (+ optional start/sit) |
+| LLM recs | TOON (default) or JSON context → JSON trades + waivers (+ optional start/sit) |
 
 **Removed:** heavy analytical trade finder (1-for-1 fairness, 2-for-1 constructors, long scoring heuristics). QB/DST/K trades are never recommended.
 
@@ -59,11 +59,12 @@ OLLAMA_BASE_URL=http://127.0.0.1:11434
 OLLAMA_MODEL=llama3.1:8b
 OLLAMA_NUM_CTX=16384      # default ~2048 truncates league JSON → empty/garbage recs
 OLLAMA_NUM_PREDICT=2048
+LLM_CONTEXT_FORMAT=toon   # toon (default, fewer tokens) | json
 ```
 
 In the app: **Refresh Data**, open **LLM recommendations**, click **Generate recommendations**.
 
-The UI sends a **compacted** context pack to Ollama (fits 8B + `num_ctx`) but keeps a **full untruncated** context for export. Use **Download full context JSON** (or the copy/paste text area) to paste into Claude in the browser; **Download raw LLM response** captures the model output too.
+The UI sends a **TOON** (Token-Oriented Object Notation) context pack to Ollama by default — tabular arrays cut ~30–50% vs compact JSON so we can include more roster/rank/FA/injury detail in the same `num_ctx`. Set `LLM_CONTEXT_FORMAT=json` to send JSON instead. The model is prompted to **reply in JSON** for parsing. Use **Download full context JSON** (Claude-in-browser) or **Download packed TOON**; **Download raw LLM response** captures model output too.
 
 If Ollama is down, the app still shows league/ranks/flags and prints setup instructions — it does not crash.
 

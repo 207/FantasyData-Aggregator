@@ -9,7 +9,9 @@ from analysis.llm_context import (
     SYSTEM_PROMPT,
     build_recommendation_context,
     build_user_prompt,
-    compact_context_for_llm,
+    context_format,
+    estimate_size,
+    pack_context_for_llm,
 )
 from analysis.weakness import TRADE_POS
 
@@ -80,8 +82,8 @@ def generate_recommendations(
 ) -> dict[str, Any]:
     """
     Returns {
-      ok, error, context (full/untruncated), context_sent (compact),
-      raw_response, result, setup
+      ok, error, context (full/untruncated), context_sent (packed dict),
+      context_toon, size_stats, wire_format, raw_response, result, setup
     }.
     On LLM failure, still returns full context so the UI can export/paste.
     """
@@ -98,16 +100,22 @@ def generate_recommendations(
         news_items=news_items,
         include_start_sit=include_start_sit,
     )
-    context_sent = compact_context_for_llm(context)
+    context_sent = pack_context_for_llm(context)
+    wire = context_format()
+    size_stats = estimate_size(context_sent)
+    context_toon = size_stats["toon"]
     setup = describe_setup()
     try:
-        raw, raw_text = complete_json(SYSTEM_PROMPT, build_user_prompt(context, compact=True))
+        raw, raw_text = complete_json(SYSTEM_PROMPT, build_user_prompt(context, packed=True, fmt=wire))
     except RuntimeError as exc:
         return {
             "ok": False,
             "error": str(exc),
             "context": context,
             "context_sent": context_sent,
+            "context_toon": context_toon,
+            "size_stats": {k: size_stats[k] for k in size_stats if k not in ("json_compact", "toon")},
+            "wire_format": wire,
             "raw_response": None,
             "result": None,
             "setup": setup,
@@ -124,6 +132,9 @@ def generate_recommendations(
         "error": None,
         "context": context,
         "context_sent": context_sent,
+        "context_toon": context_toon,
+        "size_stats": {k: size_stats[k] for k in size_stats if k not in ("json_compact", "toon")},
+        "wire_format": wire,
         "raw_response": raw_text,
         "result": result,
         "setup": setup,

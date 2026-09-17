@@ -107,20 +107,37 @@ def _safe_filename(text: str) -> str:
     return cleaned.strip("-")[:48] or "team"
 
 
-def _llm_export_bundle(out: dict, *, team_name: str, week: int | str) -> tuple[str, str, str, str]:
-    """Return (context_json, raw_json, context_filename, raw_filename)."""
+def _llm_export_bundle(out: dict, *, team_name: str, week: int | str) -> dict[str, str]:
+    """Build downloadable export blobs + filenames for JSON/TOON/raw."""
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     base = f"fantasy-llm-{_safe_filename(team_name)}-wk{week}-{stamp}"
     context_json = json.dumps(out.get("context") or {}, indent=2, default=str)
+    context_toon = out.get("context_toon") or ""
+    if not context_toon and out.get("context_sent"):
+        try:
+            from analysis.llm_context import encode_toon
+
+            context_toon = encode_toon(out.get("context_sent") or {})
+        except Exception:  # noqa: BLE001
+            context_toon = ""
     raw_payload = {
         "raw_response": out.get("raw_response"),
         "result": out.get("result"),
         "ok": out.get("ok"),
         "error": out.get("error"),
+        "wire_format": out.get("wire_format"),
+        "size_stats": out.get("size_stats"),
         "context_sent": out.get("context_sent"),
     }
     raw_json = json.dumps(raw_payload, indent=2, default=str)
-    return context_json, raw_json, f"{base}-context.json", f"{base}-raw.json"
+    return {
+        "context_json": context_json,
+        "context_toon": context_toon,
+        "raw_json": raw_json,
+        "ctx_json_name": f"{base}-context.json",
+        "ctx_toon_name": f"{base}-context.toon",
+        "raw_name": f"{base}-raw.json",
+    }
 
 
 def main() -> None:
@@ -486,35 +503,49 @@ def main() -> None:
                     )
 
                 week = getattr(meta, "current_week", "?") if meta else "?"
-                ctx_json, raw_json, ctx_name, raw_name = _llm_export_bundle(
-                    out, team_name=rec_team, week=week
-                )
+                bundle = _llm_export_bundle(out, team_name=rec_team, week=week)
+                stats = out.get("size_stats") or {}
+                wire = out.get("wire_format") or "toon"
                 st.subheader("Export for Claude / paste")
                 st.caption(
-                    "Full context JSON is untruncated (what you want for Claude in the browser). "
-                    "Ollama receives a compacted pack so llama3.1:8b fits in num_ctx."
+                    f"Ollama receives a **{wire.upper()}** pack (skill ranks RB/WR/TE/QB; DST/K omitted). "
+                    "Download full JSON for Claude in the browser, or TOON for a smaller paste. "
+                    f"Packed size ≈ JSON {stats.get('json_chars', '?')} chars "
+                    f"(~{stats.get('json_tokens_est', '?')} tok) vs TOON {stats.get('toon_chars', '?')} chars "
+                    f"(~{stats.get('toon_tokens_est', '?')} tok; "
+                    f"{stats.get('token_savings_pct_est', '?')}% fewer est. tokens)."
                 )
-                c1, c2, c3 = st.columns(3)
+                c1, c2, c3, c4 = st.columns(4)
                 with c1:
                     st.download_button(
                         "Download full context JSON",
-                        data=ctx_json,
-                        file_name=ctx_name,
+                        data=bundle["context_json"],
+                        file_name=bundle["ctx_json_name"],
                         mime="application/json",
                         use_container_width=True,
                         key="dl_llm_context",
                     )
                 with c2:
                     st.download_button(
+                        "Download packed TOON",
+                        data=bundle["context_toon"],
+                        file_name=bundle["ctx_toon_name"],
+                        mime="text/plain",
+                        use_container_width=True,
+                        key="dl_llm_context_toon",
+                        disabled=not bool(bundle["context_toon"]),
+                    )
+                with c3:
+                    st.download_button(
                         "Download raw LLM response",
-                        data=raw_json,
-                        file_name=raw_name,
+                        data=bundle["raw_json"],
+                        file_name=bundle["raw_name"],
                         mime="application/json",
                         use_container_width=True,
                         key="dl_llm_raw",
                         disabled=not bool(out.get("raw_response") or out.get("result")),
                     )
-                with c3:
+                with c4:
                     if st.button("Clear LLM results", use_container_width=True, key="clear_llm"):
                         st.session_state.pop("llm_recs", None)
                         st.rerun()
@@ -522,16 +553,23 @@ def main() -> None:
                 with st.expander("Full context JSON (copy/paste)"):
                     st.text_area(
                         "context",
-                        value=ctx_json,
+                        value=bundle["context_json"],
                         height=280,
                         label_visibility="collapsed",
                         key="llm_context_textarea",
                     )
-                    st.caption(f"Filename suggestion: `{ctx_name}` · {len(ctx_json):,} chars")
-                with st.expander("Compact pack sent to Ollama"):
-                    sent = json.dumps(out.get("context_sent") or {}, indent=2, default=str)
-                    st.code(sent, language="json")
-                    st.caption(f"{len(sent):,} chars (compacted)")
+                    st.caption(
+                        f"Filename suggestion: `{bundle['ctx_json_name']}` · "
+                        f"{len(bundle['context_json']):,} chars"
+                    )
+                with st.expander(f"Packed context sent to LLM ({wire})"):
+                    if wire == "toon" and bundle["context_toon"]:
+                        st.code(bundle["context_toon"], language="text")
+                        st.caption(f"{len(bundle['context_toon']):,} chars TOON")
+                    else:
+                        sent = json.dumps(out.get("context_sent") or {}, indent=2, default=str)
+                        st.code(sent, language="json")
+                        st.caption(f"{len(sent):,} chars (packed JSON)")
                 if out.get("raw_response"):
                     with st.expander("Raw LLM response"):
                         st.code(str(out.get("raw_response")), language="json")

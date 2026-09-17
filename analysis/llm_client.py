@@ -27,6 +27,8 @@ def llm_config() -> dict[str, str]:
         # Default Ollama num_ctx is ~2048 — far too small for league JSON. Raise it.
         "ollama_num_ctx": (os.getenv("OLLAMA_NUM_CTX", "16384") or "16384").strip(),
         "ollama_num_predict": (os.getenv("OLLAMA_NUM_PREDICT", "2048") or "2048").strip(),
+        # TOON packs more detail into fewer tokens than compact JSON (default).
+        "context_format": (os.getenv("LLM_CONTEXT_FORMAT", "toon") or "toon").strip().lower(),
         "openai_api_key": (os.getenv("OPENAI_API_KEY") or "").strip(),
         "openai_model": (os.getenv("OPENAI_MODEL", "gpt-4o-mini") or "gpt-4o-mini").strip(),
         "anthropic_api_key": (os.getenv("ANTHROPIC_API_KEY") or "").strip(),
@@ -47,9 +49,11 @@ def describe_setup() -> str:
             "LLM_PROVIDER=anthropic — set ANTHROPIC_API_KEY in config/.env "
             f"(model: {cfg['anthropic_model']})."
         )
+    fmt = cfg.get("context_format") or "toon"
     return (
         f"Default Ollama at {cfg['ollama_base_url']} model `{cfg['ollama_model']}` "
-        f"(num_ctx={cfg['ollama_num_ctx']}, num_predict={cfg['ollama_num_predict']}). "
+        f"(num_ctx={cfg['ollama_num_ctx']}, num_predict={cfg['ollama_num_predict']}, "
+        f"context={fmt}). "
         "Install: https://ollama.com — then `ollama pull llama3.1:8b` "
         "(or another 7B–14B for ~24GB Mac). Optional remote: point OLLAMA_BASE_URL "
         "at a Windows RTX 3070 host later."

@@ -1,12 +1,69 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 
 from analysis.llm_client import _looks_like_recs, _parse_json_object
-from analysis.llm_context import compact_context_for_llm
+from analysis.llm_context import (
+    _rank_rows,
+    compact_context_for_llm,
+    encode_toon,
+    estimate_size,
+    pack_context_for_llm,
+)
 
 
-def test_compact_context_shrinks_and_keeps_core_keys():
+def _synthetic_positional_board(n_skill: int = 100, n_dst: int = 50, n_k: int = 30):
+    """Positional consensus-style rows (each pos has its own 1..N ranks)."""
+    rows = []
+    for i in range(n_skill):
+        pos = ["RB", "WR", "TE", "QB"][i % 4]
+        rows.append(
+            {
+                "player_name": f"{pos}{i}",
+                "position": pos,
+                "rank": (i // 4) + 1,
+                "source": "consensus",
+                "horizon": "ros",
+            }
+        )
+    for i in range(n_dst):
+        rows.append(
+            {
+                "player_name": f"DST{i}",
+                "position": "DST",
+                "rank": i + 1,
+                "source": "consensus",
+                "horizon": "ros",
+            }
+        )
+    for i in range(n_k):
+        rows.append(
+            {
+                "player_name": f"K{i}",
+                "position": "K",
+                "rank": i + 1,
+                "source": "consensus",
+                "horizon": "ros",
+            }
+        )
+    return rows
+
+
+def test_rank_rows_prefers_skill_not_dst_k():
+    """Regression: alphabetical position sort + truncate used to yield only DST/K."""
+    board = _synthetic_positional_board()
+    packed = _rank_rows(board, horizon="ros", source="consensus", limit=45)
+    counts = Counter(r["position"] for r in packed)
+    assert counts.get("DST", 0) == 0
+    assert counts.get("K", 0) == 0
+    skill = counts.get("RB", 0) + counts.get("WR", 0) + counts.get("TE", 0) + counts.get("QB", 0)
+    assert skill == len(packed) == 45
+    assert counts.get("RB", 0) >= 5
+    assert counts.get("WR", 0) >= 5
+
+
+def test_pack_context_skill_ranks_dominate():
     full = {
         "rules": {"hunt_positions": ["RB"], "never_trade_positions": ["QB", "DST", "K"]},
         "league": {
@@ -50,12 +107,27 @@ def test_compact_context_shrinks_and_keeps_core_keys():
         },
         "league_weakness_flags": [{"team": "B", "position": "RB", "level": "Weak"}],
         "rankings": {
-            "ros_consensus_top": [{"name": "Star", "position": "RB", "rank": 1}] * 60,
-            "weekly_consensus_top": [{"name": "Week", "position": "WR", "rank": 2}] * 60,
-            "ros_by_source_sample": {"fantasypros": [{"name": "x"}] * 30},
-            "weekly_by_source_sample": {"espn": [{"name": "y"}] * 30},
+            "ros_consensus_top": [
+                {"name": "Star RB", "position": "RB", "rank": 1},
+                {"name": "Star WR", "position": "WR", "rank": 1},
+                {"name": "Bad DST", "position": "DST", "rank": 1},
+                {"name": "Bad K", "position": "K", "rank": 1},
+            ]
+            + [{"name": f"RB{i}", "position": "RB", "rank": i + 2} for i in range(40)]
+            + [{"name": f"DST{i}", "position": "DST", "rank": i + 2} for i in range(40)],
+            "weekly_consensus_top": [
+                {"name": "Week WR", "position": "WR", "rank": 2},
+                {"name": "Week DST", "position": "DST", "rank": 1},
+            ],
+            "ros_by_source_sample": {
+                "fantasypros": [{"name": "x", "position": "RB", "rank": 1}] * 10,
+                "sleeper": [{"name": "y", "position": "WR", "rank": 1}] * 10,
+            },
+            "weekly_by_source_sample": {"espn": [{"name": "z", "position": "TE", "rank": 1}] * 5},
         },
-        "free_agents_skill": [{"name": f"FA{i}", "position": "RB", "nfl_team": "NE"} for i in range(40)],
+        "free_agents_skill": [
+            {"name": f"FA{i}", "position": "RB", "nfl_team": "NE"} for i in range(40)
+        ],
         "news_injuries": [
             {
                 "player_name": "Hurt Guy",
@@ -64,14 +136,38 @@ def test_compact_context_shrinks_and_keeps_core_keys():
                 "source": "espn",
             }
         ]
-        + [{"player_name": "Fine", "headline": "Practice notes", "injury_flag": ""} for _ in range(20)],
+        + [
+            {"player_name": "Fine", "headline": "Practice notes", "injury_flag": ""}
+            for _ in range(20)
+        ],
     }
-    packed = compact_context_for_llm(full)
-    assert "ros_by_source_sample" not in packed["rankings"]
-    assert packed["your_team"]["roster"][0]["n"] == "Player One"
-    assert len(packed["free_agents_skill"]) <= 30
-    assert len(json.dumps(packed, separators=(",", ":"))) < len(json.dumps(full))
+    packed = pack_context_for_llm(full)
+    assert compact_context_for_llm is pack_context_for_llm
+    ros = packed["rankings"]["ros_top"]
+    assert all(r["pos"] in {"RB", "WR", "TE", "QB"} for r in ros)
+    assert not any(r["pos"] in {"DST", "K"} for r in ros)
+    assert packed["your_team"]["roster"][0]["name"] == "Player One"
+    assert packed["your_team"]["roster"][0]["nfl"] == "KC"
+    assert len(packed["free_agents_skill"]) <= 50
     assert packed["_packing"]["full_context_chars"] == len(json.dumps(full, default=str))
+
+
+def test_toon_smaller_than_json_and_roundtrips():
+    payload = {
+        "rankings": {
+            "ros_top": [
+                {"name": f"Player {i}", "pos": "RB", "rank": i} for i in range(1, 21)
+            ]
+        },
+        "free_agents_skill": [
+            {"name": f"FA{i}", "pos": "WR", "nfl": "NE"} for i in range(15)
+        ],
+    }
+    stats = estimate_size(payload)
+    assert stats["toon_chars"] < stats["json_chars"]
+    assert stats["token_savings_pct_est"] > 0
+    toon = encode_toon(payload)
+    assert "ros_top[" in toon or "name,pos,rank" in toon.replace(" ", "")
 
 
 def test_schema_guard_rejects_random_json():
@@ -79,5 +175,8 @@ def test_schema_guard_rejects_random_json():
     assert not _looks_like_recs(
         {"message": "No code provided", "document_type": "error"}
     )
-    parsed = _parse_json_object('{"trades":[],"waivers":[{"add":"A","drop":null,"position":"RB","why":"x"}],"start_sit":[],"notes":"ok"}')
+    parsed = _parse_json_object(
+        '{"trades":[],"waivers":[{"add":"A","drop":null,"position":"RB","why":"x"}],'
+        '"start_sit":[],"notes":"ok"}'
+    )
     assert _looks_like_recs(parsed)

@@ -1,14 +1,31 @@
 from __future__ import annotations
 
-"""Build structured JSON context for LLM trade / waiver / start-sit recommendations."""
+"""Build structured context for LLM trade / waiver / start-sit recommendations.
+
+Default wire format for Ollama is TOON (Token-Oriented Object Notation) via the
+`toon-format` package — tabular arrays cut token use so we can send richer
+roster/rank/injury/FA detail than the old compacted JSON pack. Responses are
+still JSON for reliable parsing. JSON export remains available for Claude paste.
+"""
 
 import json
+import os
 from typing import Any
 
 from analysis.weakness import TRADE_POS, all_team_weakness_flags, weakness_flags_for_team
 from ingestion.positions import normalize_position
 
 NEVER_TRADE_POS = frozenset({"QB", "DST", "K"})
+# Positions we want on the rank board for trades/waivers/start-sit.
+SKILL_RANK_POS = frozenset({"RB", "WR", "TE", "QB"})
+# DST/K sort alphabetically first; including them before truncate wiped skill ranks.
+OMIT_RANK_POS = frozenset({"DST", "K", "DEF", "D/ST"})
+
+
+def context_format() -> str:
+    """Wire format for LLM prompts: toon (default) | json."""
+    raw = (os.getenv("LLM_CONTEXT_FORMAT", "toon") or "toon").strip().lower()
+    return "json" if raw == "json" else "toon"
 
 
 def _rank_rows(
@@ -17,7 +34,15 @@ def _rank_rows(
     horizon: str | None = None,
     source: str | None = None,
     limit: int = 80,
+    positions: frozenset[str] | None = SKILL_RANK_POS,
 ) -> list[dict[str, Any]]:
+    """
+    Select ranking rows for LLM/export context.
+
+    Consensus boards are *positional* (each pos has ranks 1..N). Sorting by
+    position string then truncating preferred DST/K alphabetically and dropped
+    RB/WR/TE. We filter to skill positions and sort by rank ascending.
+    """
     rows: list[dict[str, Any]] = []
     for r in rankings:
         h = getattr(r, "horizon", None) or (r.get("horizon") if isinstance(r, dict) else None) or "ros"
@@ -27,7 +52,12 @@ def _rank_rows(
         if source and src != source:
             continue
         name = getattr(r, "player_name", None) or (r.get("player_name") or r.get("name") if isinstance(r, dict) else "")
-        pos = getattr(r, "position", None) or (r.get("position") if isinstance(r, dict) else "")
+        pos_raw = getattr(r, "position", None) or (r.get("position") if isinstance(r, dict) else "")
+        pos = normalize_position(pos_raw or "")
+        if positions is not None and pos not in positions:
+            continue
+        if pos in OMIT_RANK_POS:
+            continue
         rank = getattr(r, "rank", None) if not isinstance(r, dict) else r.get("rank")
         rows.append(
             {
@@ -39,7 +69,8 @@ def _rank_rows(
                 "tier": getattr(r, "tier", None) if not isinstance(r, dict) else r.get("tier"),
             }
         )
-    rows.sort(key=lambda x: (x["position"] or "", int(x["rank"] or 999)))
+    # Rank-first (positional boards): keep best players across RB/WR/TE/QB.
+    rows.sort(key=lambda x: (int(x["rank"] or 999), x["position"] or "", x["name"] or ""))
     return rows[:limit]
 
 
@@ -111,6 +142,7 @@ def build_recommendation_context(
     roster_slots = getattr(meta, "roster_slots", None) or "{}"
 
     # Prefer ROS consensus for weakness; fall back to any ROS rows.
+    # Skill-only: DST/K omitted (never traded; previously starved the truncate window).
     ros_consensus = _rank_rows(rankings, horizon="ros", source="consensus", limit=200)
     if not ros_consensus:
         ros_consensus = _rank_rows(rankings, horizon="ros", limit=200)
@@ -149,7 +181,7 @@ def build_recommendation_context(
                 "nfl_team": fa.get("nfl_team") or "",
             }
         )
-        if len(fa_brief) >= 60:
+        if len(fa_brief) >= 80:
             break
 
     other_rosters = {
@@ -184,12 +216,12 @@ def build_recommendation_context(
             f for f in league_flags if f.get("trade_relevant") or f.get("level") == "Weak"
         ],
         "rankings": {
-            "ros_consensus_top": ros_consensus[:60],
-            "weekly_consensus_top": weekly_consensus[:60],
+            "ros_consensus_top": ros_consensus[:80],
+            "weekly_consensus_top": weekly_consensus[:80],
             "ros_by_source_sample": {
-                "fantasypros": _rank_rows(rankings, horizon="ros", source="fantasypros", limit=30),
-                "sleeper": _rank_rows(rankings, horizon="ros", source="sleeper", limit=30),
-                "espn": _rank_rows(rankings, horizon="ros", source="espn", limit=30),
+                "fantasypros": _rank_rows(rankings, horizon="ros", source="fantasypros", limit=40),
+                "sleeper": _rank_rows(rankings, horizon="ros", source="sleeper", limit=40),
+                "espn": _rank_rows(rankings, horizon="ros", source="espn", limit=40),
             },
             "weekly_by_source_sample": {
                 "fantasypros": _rank_rows(rankings, horizon="weekly", source="fantasypros", limit=30),
@@ -198,33 +230,54 @@ def build_recommendation_context(
             },
         },
         "free_agents_skill": fa_brief,
-        "news_injuries": _news_for_context(news_items),
+        "news_injuries": _news_for_context(news_items, limit=50),
     }
 
 
-def compact_context_for_llm(context: dict[str, Any]) -> dict[str, Any]:
+def pack_context_for_llm(context: dict[str, Any]) -> dict[str, Any]:
     """
-    Shrink full export context so an 8B Ollama model can fit it in num_ctx.
+    LLM-bound payload: richer than the old heavily compacted JSON pack.
 
-    Keeps the same semantic content the advisor needs; drops by-source ranking
-    samples and shortens field names / news. Full context remains for export.
+    TOON token savings let us restore nfl_team, more ranks, FA, and injuries
+    while still fitting typical Ollama num_ctx. DST/K ranks stay omitted.
     """
     raw = json.loads(json.dumps(context, default=str))
 
     def slim_roster(roster: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return [
             {
-                "n": p.get("name"),
-                "p": p.get("position"),
-                "s": p.get("slot") or p.get("lineup_slot") or "",
+                "name": p.get("name"),
+                "pos": p.get("position"),
+                "nfl": p.get("nfl_team") or "",
+                "slot": p.get("slot") or p.get("lineup_slot") or "",
             }
             for p in roster
         ]
+
+    def slim_rank(rows: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            pos = normalize_position(r.get("position") or "")
+            if pos in OMIT_RANK_POS:
+                continue
+            if pos not in SKILL_RANK_POS:
+                continue
+            out.append(
+                {
+                    "name": r.get("name"),
+                    "pos": pos,
+                    "rank": r.get("rank"),
+                }
+            )
+            if len(out) >= limit:
+                break
+        return out
 
     your = raw.get("your_team") or {}
     ranks = raw.get("rankings") or {}
     ros = ranks.get("ros_consensus_top") or []
     weekly = ranks.get("weekly_consensus_top") or []
+    by_src = ranks.get("ros_by_source_sample") or {}
 
     news_out: list[dict[str, Any]] = []
     for n in raw.get("news_injuries") or []:
@@ -235,13 +288,13 @@ def compact_context_for_llm(context: dict[str, Any]) -> dict[str, Any]:
                 {
                     "player": n.get("player_name") or "",
                     "flag": flag,
-                    "h": (n.get("headline") or "")[:70],
+                    "headline": (n.get("headline") or "")[:100],
                 }
             )
-        if len(news_out) >= 15:
+        if len(news_out) >= 25:
             break
 
-    return {
+    packed = {
         "rules": raw.get("rules") or {},
         "league": {
             "name": (raw.get("league") or {}).get("name"),
@@ -275,32 +328,76 @@ def compact_context_for_llm(context: dict[str, Any]) -> dict[str, Any]:
                 "best_player": f.get("best_player"),
                 "best_rank": f.get("best_rank"),
             }
-            for f in (raw.get("league_weakness_flags") or [])[:30]
+            for f in (raw.get("league_weakness_flags") or [])[:40]
         ],
         "rankings": {
-            "ros_top": [
-                {"n": r.get("name"), "p": r.get("position"), "r": r.get("rank")}
-                for r in ros[:45]
-            ],
-            "weekly_top": [
-                {"n": r.get("name"), "p": r.get("position"), "r": r.get("rank")}
-                for r in weekly[:35]
-            ],
+            "ros_top": slim_rank(ros, 70),
+            "weekly_top": slim_rank(weekly, 55),
+            "ros_fantasypros": slim_rank(by_src.get("fantasypros") or [], 25),
+            "ros_sleeper": slim_rank(by_src.get("sleeper") or [], 25),
         },
         "free_agents_skill": [
-            {"n": f.get("name"), "p": f.get("position")}
-            for f in (raw.get("free_agents_skill") or [])[:30]
+            {
+                "name": f.get("name"),
+                "pos": f.get("position"),
+                "nfl": f.get("nfl_team") or "",
+            }
+            for f in (raw.get("free_agents_skill") or [])[:50]
         ],
         "news_injuries": news_out,
-        "_packing": {
-            "note": "Compacted for local 8B context window; export JSON is untruncated.",
-            "full_context_chars": len(json.dumps(context, default=str)),
-        },
+    }
+    packed["_packing"] = {
+        "note": (
+            "Packed for LLM (skill ranks only; DST/K omitted). "
+            "Wire format is TOON by default — export JSON is untruncated full context."
+        ),
+        "full_context_chars": len(json.dumps(context, default=str)),
+        "format": context_format(),
+    }
+    return packed
+
+
+# Back-compat alias used by tests / older callers
+compact_context_for_llm = pack_context_for_llm
+
+
+def encode_toon(data: dict[str, Any]) -> str:
+    """Serialize a dict to TOON. Requires toon-format >= 0.9.0b1 (not the 0.1 stub)."""
+    from toon_format import encode
+
+    return encode(data)
+
+
+def estimate_size(payload: dict[str, Any]) -> dict[str, Any]:
+    """Char counts + rough token estimate (chars/4) for compact JSON vs TOON."""
+    json_compact = json.dumps(payload, default=str, separators=(",", ":"))
+    toon_text = encode_toon(payload)
+    json_chars = len(json_compact)
+    toon_chars = len(toon_text)
+    json_tok = max(1, json_chars // 4)
+    toon_tok = max(1, toon_chars // 4)
+    return {
+        "json_chars": json_chars,
+        "toon_chars": toon_chars,
+        "json_tokens_est": json_tok,
+        "toon_tokens_est": toon_tok,
+        "char_savings_pct": round(100.0 * (1 - toon_chars / json_chars), 1) if json_chars else 0.0,
+        "token_savings_pct_est": round(100.0 * (1 - toon_tok / json_tok), 1) if json_tok else 0.0,
+        "json_compact": json_compact,
+        "toon": toon_text,
     }
 
 
 SYSTEM_PROMPT = """You are a sharp fantasy football advisor for a 12-team ESPN redraft league.
-Return ONLY valid JSON matching this schema:
+
+The USER message includes league context in TOON (Token-Oriented Object Notation) or JSON.
+TOON uses indentation and tabular arrays like:
+  rankings.ros_top[3]{name,pos,rank}:
+    Bijan Robinson,RB,1
+    Ja'Marr Chase,WR,1
+Read TOON the same way you would JSON objects/arrays. Field shortcuts: pos=position, nfl=NFL team, slot=lineup slot.
+
+Return ONLY valid JSON (never TOON) matching this schema:
 {
   "trades": [
     {
@@ -336,14 +433,39 @@ Hard rules:
 - Prefer realistic win-win pitches over steals.
 - Limit: up to 3 trades, 5 waivers, 3 start/sit. Keep each why to one short sentence.
 - If data is thin, return fewer ideas and explain in notes — do not invent players not in context.
-- Keys n/p/r/s in packed JSON mean name/position/rank/slot.
+- Rankings in context are skill positions only (RB/WR/TE/QB); DST/K are omitted on purpose.
 """
 
 
-def build_user_prompt(context: dict[str, Any], *, compact: bool = True) -> str:
-    payload = compact_context_for_llm(context) if compact else context
-    return (
-        "Using this league context JSON, propose trades, waivers, and optional start/sit. "
+def build_user_prompt(
+    context: dict[str, Any],
+    *,
+    packed: bool = True,
+    fmt: str | None = None,
+) -> str:
+    """Build the user message. Default: packed payload encoded as TOON."""
+    payload = pack_context_for_llm(context) if packed else context
+    wire = (fmt or context_format()).lower()
+    if wire == "json":
+        body = json.dumps(payload, default=str, separators=(",", ":"))
+        intro = (
+            "Using this league context JSON, propose trades, waivers, and optional start/sit. "
+            "Respond with JSON only (schema in system prompt). "
+            "Keep why fields to one short sentence. Max 3 trades, 5 waivers, 3 start/sit.\n\n"
+        )
+        return intro + body
+
+    body = encode_toon(payload)
+    intro = (
+        "Using this league context in TOON (Token-Oriented Object Notation), "
+        "propose trades, waivers, and optional start/sit. "
+        "Respond with JSON only (schema in system prompt) — do not reply in TOON. "
         "Keep why fields to one short sentence. Max 3 trades, 5 waivers, 3 start/sit.\n\n"
-        + json.dumps(payload, default=str, separators=(",", ":"))
+        "```toon\n"
     )
+    return intro + body + "\n```"
+
+
+# Older callers used compact=True
+def build_user_prompt_legacy(context: dict[str, Any], *, compact: bool = True) -> str:
+    return build_user_prompt(context, packed=compact)
