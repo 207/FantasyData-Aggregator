@@ -38,7 +38,7 @@ from analysis import recommendations as recommendations_mod
 from analysis import trade_finder as trade_finder_mod
 from analysis import waiver_finder as waiver_finder_mod
 from analysis import weakness as weakness_mod
-from analysis.llm_client import describe_setup
+from analysis.llm_client import describe_setup, retry_settings
 from analysis.llm_context import (
     build_recommendation_context,
     context_format,
@@ -582,9 +582,13 @@ def main() -> None:
 
             st.divider()
             st.subheader("Generate with Gemini")
-            st.caption(describe_setup())
+            _retry_max, _retry_base = retry_settings()
+            st.caption(
+                f"{describe_setup()} Auto-retries on high demand "
+                f"(starts at {_retry_base:g}s, doubles each try; up to {_retry_max} attempts)."
+            )
             if st.button("Generate recommendations", type="primary"):
-                with st.spinner("Calling Gemini…"):
+                with st.spinner("Calling Gemini… (retries with backoff if busy)"):
                     gen_out = generate_recommendations(
                         team_name=rec_team,
                         hunt_positions=hunt,
