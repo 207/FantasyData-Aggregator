@@ -23,7 +23,7 @@ Local single-user fantasy football analyzer: ESPN league pull, multi-source **we
 
 **LLM runtime**
 
-- Default: Google Gemini (`GEMINI_API_KEY` / `GOOGLE_API_KEY`, model `gemini-2.5-flash`)
+- Default: Google Gemini (`GEMINI_API_KEY` / `GOOGLE_API_KEY`, model `gemini-3.8-flash`)
 - Optional: OpenAI / Anthropic via user API keys
 - Graceful error if no key — UI still shows data + AI Studio setup link
 

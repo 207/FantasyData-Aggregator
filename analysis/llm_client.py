@@ -22,8 +22,8 @@ log = logging.getLogger(__name__)
 
 SCHEMA_KEYS = ("trades", "waivers", "start_sit")
 
-# Free-tier friendly stable Flash model (gemini-2.0-flash shut down mid-2026).
-DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
+# Best free-tier Flash model (Google: "most intelligent Flash"; 2.5 blocked for new keys).
+DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
 
 
 def _gemini_api_key() -> str:
@@ -72,8 +72,8 @@ def describe_setup() -> str:
         return (
             "Google Gemini is the default LLM. Set GEMINI_API_KEY (or GOOGLE_API_KEY) "
             "in config/.env — get a free key at https://aistudio.google.com/apikey "
-            f"(model: {cfg['gemini_model']}). Optional: GEMINI_MODEL=gemini-2.5-flash-lite "
-            "for a lighter free-tier option."
+            f"(model: {cfg['gemini_model']}). Optional: GEMINI_MODEL=gemini-3.5-flash-lite "
+            "for higher free-tier request volume."
         )
     return (
         f"Gemini model `{cfg['gemini_model']}` "

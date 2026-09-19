@@ -50,7 +50,7 @@ pkill -f 'streamlit run app.py'   # only if you intend to stop FantasyAnalysis
 LLM_PROVIDER=gemini
 GEMINI_API_KEY=your_key_here
 # or: GOOGLE_API_KEY=your_key_here
-GEMINI_MODEL=gemini-2.5-flash   # free-tier Flash; try gemini-2.5-flash-lite
+GEMINI_MODEL=gemini-3.8-flash   # best free-tier Flash; lite: gemini-3.5-flash-lite
 LLM_CONTEXT_FORMAT=toon         # toon (default) | json
 FUSION_METHOD=rrf
 FUSION_RRF_K=60
