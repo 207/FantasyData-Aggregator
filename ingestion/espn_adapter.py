@@ -17,7 +17,7 @@ def load_config() -> dict[str, str]:
     load_dotenv(ENV_PATH)
     return {
         "league_id": os.getenv("LEAGUE_ID", "").strip(),
-        "year": os.getenv("YEAR", "2025").strip(),
+        "year": os.getenv("YEAR", "2026").strip(),
         "swid": os.getenv("SWID", "").strip(),
         "espn_s2": os.getenv("ESPN_S2", "").strip(),
         "team_name": os.getenv("TEAM_NAME", "").strip(),
@@ -38,7 +38,7 @@ def fetch_espn_league(cfg: dict[str, str] | None = None) -> dict[str, Any]:
 
     from espn_api.football import League  # lazy import
 
-    year = int(cfg["year"] or 2025)
+    year = int(cfg["year"] or 2026)
     league = League(
         league_id=int(cfg["league_id"]),
         year=year,

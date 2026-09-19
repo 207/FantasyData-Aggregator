@@ -252,8 +252,11 @@ def complete_json(system: str, user: str) -> tuple[dict[str, Any], str]:
             f"Cannot reach LLM ({provider}). {describe_setup()} Detail: {exc}"
         ) from exc
     except httpx.HTTPStatusError as exc:
+        body = (exc.response.text or "")[:300]
+        log.error("LLM HTTP %s (%s): %s", exc.response.status_code, provider, body)
         raise RuntimeError(
-            f"LLM HTTP error ({provider}): {exc.response.status_code} {exc.response.text[:300]}"
+            f"LLM HTTP error ({provider}): {exc.response.status_code}. "
+            f"See logs for details. {describe_setup()}"
         ) from exc
     except Exception as exc:  # noqa: BLE001
         raise RuntimeError(f"LLM call failed ({provider}): {exc}") from exc

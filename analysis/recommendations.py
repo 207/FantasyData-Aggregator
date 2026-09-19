@@ -51,7 +51,8 @@ def _filter_trades(trades: list[dict], context: dict[str, Any]) -> list[dict]:
         bad = False
         for n in names:
             pos = _pos_of(str(n), context)
-            if pos in NEVER_TRADE:
+            # Unknown names (model inventions) and NEVER_TRADE positions are dropped.
+            if pos is None or pos in NEVER_TRADE:
                 bad = True
                 break
         if bad:

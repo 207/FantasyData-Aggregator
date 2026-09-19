@@ -5,7 +5,7 @@ from __future__ import annotations
 DEMO_PAYLOAD = {
     "league_id": "demo-1001",
     "league_name": "Demo Gridiron League",
-    "year": 2025,
+    "year": 2026,
     "current_week": 3,
     "source_mode": "demo",
     "scoring_settings": {"ppr": True, "passing_td": 4, "reception": 1.0},
