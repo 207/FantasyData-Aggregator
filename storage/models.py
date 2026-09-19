@@ -8,6 +8,8 @@ from sqlmodel import Field, SQLModel
 
 class Player(SQLModel, table=True):
     __tablename__ = "players"
+    # Streamlit reloads re-exec models; allow redefine on the shared MetaData.
+    __table_args__ = {"extend_existing": True}
 
     player_id: str = Field(primary_key=True)
     name: str
@@ -17,6 +19,7 @@ class Player(SQLModel, table=True):
 
 class Ranking(SQLModel, table=True):
     __tablename__ = "rankings"
+    __table_args__ = {"extend_existing": True}
 
     id: Optional[int] = Field(default=None, primary_key=True)
     player_id: str = Field(index=True)
@@ -33,6 +36,7 @@ class Ranking(SQLModel, table=True):
 
 class NewsItem(SQLModel, table=True):
     __tablename__ = "news"
+    __table_args__ = {"extend_existing": True}
 
     id: Optional[int] = Field(default=None, primary_key=True)
     player_id: str = Field(index=True)
@@ -46,6 +50,7 @@ class NewsItem(SQLModel, table=True):
 
 class RosterSnapshot(SQLModel, table=True):
     __tablename__ = "roster_snapshots"
+    __table_args__ = {"extend_existing": True}
 
     id: Optional[int] = Field(default=None, primary_key=True)
     team_id: str = Field(index=True)
@@ -58,6 +63,7 @@ class RosterSnapshot(SQLModel, table=True):
 
 class TeamStanding(SQLModel, table=True):
     __tablename__ = "team_standings"
+    __table_args__ = {"extend_existing": True}
 
     id: Optional[int] = Field(default=None, primary_key=True)
     team_id: str = Field(index=True)
@@ -72,6 +78,7 @@ class TeamStanding(SQLModel, table=True):
 
 class MatchupRow(SQLModel, table=True):
     __tablename__ = "matchups"
+    __table_args__ = {"extend_existing": True}
 
     id: Optional[int] = Field(default=None, primary_key=True)
     week: int
@@ -85,6 +92,7 @@ class MatchupRow(SQLModel, table=True):
 
 class LeagueMeta(SQLModel, table=True):
     __tablename__ = "league_meta"
+    __table_args__ = {"extend_existing": True}
 
     id: Optional[int] = Field(default=None, primary_key=True)
     league_id: str
@@ -102,6 +110,7 @@ class LeagueMeta(SQLModel, table=True):
 
 class RefreshLog(SQLModel, table=True):
     __tablename__ = "refresh_log"
+    __table_args__ = {"extend_existing": True}
 
     id: Optional[int] = Field(default=None, primary_key=True)
     source: str

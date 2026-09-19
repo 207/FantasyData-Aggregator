@@ -2,6 +2,7 @@ from __future__ import annotations
 
 """News / injury flags — ESPN public news API + Sleeper injury_status."""
 
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -79,14 +80,17 @@ def fetch_espn_news(limit: int = 50) -> dict[str, Any]:
         }
 
 
-def fetch_sleeper_injuries() -> dict[str, Any]:
+def fetch_sleeper_injuries(players_map: dict[str, Any] | None = None) -> dict[str, Any]:
     """Pull injury_status from Sleeper players map — free public API."""
     pulled = datetime.now(timezone.utc)
     try:
-        with httpx.Client(timeout=60.0, headers={"User-Agent": "FantasyAnalysis/0.4"}) as client:
-            resp = client.get(SLEEPER_PLAYERS_URL)
-            resp.raise_for_status()
-            players = resp.json() or {}
+        if players_map is None:
+            with httpx.Client(timeout=60.0, headers={"User-Agent": "FantasyAnalysis/0.4"}) as client:
+                resp = client.get(SLEEPER_PLAYERS_URL)
+                resp.raise_for_status()
+                players = resp.json() or {}
+        else:
+            players = players_map
         items: list[dict[str, Any]] = []
         for pid, pdata in players.items():
             if not isinstance(pdata, dict):
@@ -133,9 +137,19 @@ def fetch_sleeper_injuries() -> dict[str, Any]:
 
 def _flag_from_text(text: str) -> str:
     t = (text or "").lower()
-    for key in ("out", "doubtful", "questionable", "injured", "ir", "pup", "suspended"):
-        if key in t:
-            return key.upper()
+    # Prefer phrases / word boundaries so "about" / "without" don't become OUT.
+    checks: list[tuple[str, str]] = [
+        (r"\bruled out\b|\blisted as out\b|\bout for\b|\bout indefinitely\b|\bout\b", "OUT"),
+        (r"\bdoubtful\b", "DOUBTFUL"),
+        (r"\bquestionable\b", "QUESTIONABLE"),
+        (r"\binjured\b|\binjury\b", "INJURED"),
+        (r"\bir\b|\binjured reserve\b", "IR"),
+        (r"\bpup\b", "PUP"),
+        (r"\bsuspended\b|\bsuspension\b", "SUSPENDED"),
+    ]
+    for pattern, flag in checks:
+        if re.search(pattern, t):
+            return flag
     return "NEWS"
 
 
@@ -156,10 +170,13 @@ def attach_player_ids(news: list[dict[str, Any]], players: list[dict[str, Any]])
     return out
 
 
-def fetch_news_and_injuries(players: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+def fetch_news_and_injuries(
+    players: list[dict[str, Any]] | None = None,
+    sleeper_players_map: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Combine ESPN headlines + Sleeper injury statuses."""
     espn = fetch_espn_news()
-    sleeper = fetch_sleeper_injuries()
+    sleeper = fetch_sleeper_injuries(sleeper_players_map)
     combined = list(espn.get("news") or []) + list(sleeper.get("news") or [])
     if players:
         combined = attach_player_ids(combined, players)

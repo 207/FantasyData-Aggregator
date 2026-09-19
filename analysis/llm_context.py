@@ -23,6 +23,18 @@ SKILL_RANK_POS = frozenset({"RB", "WR", "TE", "QB"})
 OMIT_RANK_POS = frozenset({"DST", "K", "DEF", "D/ST"})
 
 
+def _parse_roster_slots(roster_slots: Any) -> dict[str, Any]:
+    if isinstance(roster_slots, dict):
+        return roster_slots
+    if isinstance(roster_slots, str):
+        try:
+            parsed = json.loads(roster_slots)
+            return parsed if isinstance(parsed, dict) else {}
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+
 def context_format() -> str:
     """Wire format for LLM prompts: toon (default) | json."""
     raw = (os.getenv("LLM_CONTEXT_FORMAT", "toon") or "toon").strip().lower()
@@ -202,9 +214,7 @@ def build_recommendation_context(
             "name": getattr(meta, "league_name", ""),
             "week": getattr(meta, "current_week", 1),
             "year": getattr(meta, "year", 0),
-            "roster_slots": json.loads(roster_slots)
-            if isinstance(roster_slots, str)
-            else (roster_slots or {}),
+            "roster_slots": _parse_roster_slots(roster_slots),
             "standings": standings_brief,
         },
         "your_team": {

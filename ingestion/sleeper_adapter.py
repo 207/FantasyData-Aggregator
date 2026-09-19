@@ -28,18 +28,24 @@ def _enabled() -> bool:
     }
 
 
-def fetch_sleeper_rankings(week: int = 1, limit: int = 400) -> dict[str, Any]:
+def fetch_sleeper_rankings(
+    week: int = 1,
+    limit: int = 400,
+    players_map: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """
     Build:
       - ROS ranks from Sleeper `search_rank` (ADP-ish)
       - Weekly buzz ranks from trending adds (thin but free signal)
 
     Free public API — no auth.
+    Pass `players_map` to reuse a prior NFL players download (avoids double fetch).
     """
     if not _enabled():
         return {
             "rankings": [],
             "trending": [],
+            "players_map": players_map,
             "log": {
                 "source": "sleeper",
                 "status": "stale",
@@ -52,6 +58,7 @@ def fetch_sleeper_rankings(week: int = 1, limit: int = 400) -> dict[str, Any]:
         return {
             "rankings": [],
             "trending": [],
+            "players_map": players_map,
             "log": {
                 "source": "sleeper",
                 "status": "ok",
@@ -62,9 +69,12 @@ def fetch_sleeper_rankings(week: int = 1, limit: int = 400) -> dict[str, Any]:
     pulled = datetime.now(timezone.utc)
     try:
         with httpx.Client(timeout=60.0, headers={"User-Agent": "FantasyAnalysis/0.4"}) as client:
-            players_resp = client.get(SLEEPER_PLAYERS_URL)
-            players_resp.raise_for_status()
-            players = players_resp.json()
+            if players_map is None:
+                players_resp = client.get(SLEEPER_PLAYERS_URL)
+                players_resp.raise_for_status()
+                players = players_resp.json()
+            else:
+                players = players_map
             trending: list[dict[str, Any]] = []
             try:
                 trend_resp = client.get(
@@ -165,6 +175,7 @@ def fetch_sleeper_rankings(week: int = 1, limit: int = 400) -> dict[str, Any]:
         return {
             "rankings": rankings,
             "trending": trend_names,
+            "players_map": players,
             "log": {
                 "source": "sleeper",
                 "status": "ok",
@@ -178,6 +189,7 @@ def fetch_sleeper_rankings(week: int = 1, limit: int = 400) -> dict[str, Any]:
         return {
             "rankings": [],
             "trending": [],
+            "players_map": players_map,
             "log": {
                 "source": "sleeper",
                 "status": "error",

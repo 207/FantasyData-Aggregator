@@ -52,7 +52,10 @@ def fetch_league(force_demo: bool = False) -> dict[str, Any]:
         ),
     }
 
-    news_bundle = fetch_news_and_injuries(players)
+    # Reuse Sleeper NFL players map for injuries (avoid a second full download).
+    news_bundle = fetch_news_and_injuries(
+        players, sleeper_players_map=sl.get("players_map")
+    )
 
     logs = list(payload.get("refresh_logs") or [])
     logs.extend(fp.get("logs") or [])
