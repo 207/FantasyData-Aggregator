@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ingestion.consensus import build_consensus_both, normalize_player_name
+from ingestion.consensus import build_consensus_both, fusion_method, normalize_player_name
 from ingestion.espn_adapter import fetch_league as fetch_league_core
 from ingestion.espn_rankings import rankings_from_espn_players
 from ingestion.fantasypros_adapter import fetch_fantasypros_both
@@ -65,7 +65,8 @@ def fetch_league(force_demo: bool = False) -> dict[str, Any]:
         sl.get("rankings") or [],
         espn_rows,
     ]
-    consensus = build_consensus_both(source_lists, week=week)
+    method = fusion_method()
+    consensus = build_consensus_both(source_lists, week=week, method=method)
 
     all_rows = list(consensus)
     for rows in source_lists:
@@ -85,7 +86,10 @@ def fetch_league(force_demo: bool = False) -> dict[str, Any]:
             {
                 "source": "consensus",
                 "status": "ok",
-                "message": f"Built consensus: {ros_n} ROS + {wk_n} weekly players.",
+                "message": (
+                    f"Fused boards ({method}): {ros_n} ROS + {wk_n} weekly players "
+                    "(FantasyPros + Sleeper + ESPN when present)."
+                ),
             }
         )
     else:
@@ -93,7 +97,7 @@ def fetch_league(force_demo: bool = False) -> dict[str, Any]:
             {
                 "source": "consensus",
                 "status": "error",
-                "message": "No consensus rankings could be built.",
+                "message": "No fused rankings could be built.",
             }
         )
     return payload

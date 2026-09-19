@@ -39,6 +39,13 @@ from analysis import trade_finder as trade_finder_mod
 from analysis import waiver_finder as waiver_finder_mod
 from analysis import weakness as weakness_mod
 from analysis.llm_client import describe_setup
+from analysis.llm_context import (
+    build_recommendation_context,
+    context_format,
+    encode_toon,
+    estimate_size,
+    pack_context_for_llm,
+)
 
 recommendations_mod = importlib.reload(recommendations_mod)
 trade_finder_mod = importlib.reload(trade_finder_mod)
@@ -107,6 +114,50 @@ def _safe_filename(text: str) -> str:
     return cleaned.strip("-")[:48] or "team"
 
 
+def _build_export_pack(
+    *,
+    team_name: str,
+    hunt_positions: list[str],
+    meta,
+    rosters,
+    players,
+    standings,
+    rankings,
+    free_agents,
+    news_items,
+    include_start_sit: bool,
+) -> dict:
+    """Build full + packed LLM context for download/copy without calling Gemini."""
+    context = build_recommendation_context(
+        team_name=team_name,
+        hunt_positions=hunt_positions,
+        meta=meta,
+        rosters=rosters,
+        players=players,
+        standings=standings,
+        rankings=rankings,
+        free_agents=free_agents,
+        news_items=news_items,
+        include_start_sit=include_start_sit,
+    )
+    context_sent = pack_context_for_llm(context)
+    wire = context_format()
+    size_stats = estimate_size(context_sent)
+    return {
+        "context": context,
+        "context_sent": context_sent,
+        "context_toon": size_stats.get("toon") or "",
+        "size_stats": {
+            k: size_stats[k] for k in size_stats if k not in ("json_compact", "toon")
+        },
+        "wire_format": wire,
+        "raw_response": None,
+        "result": None,
+        "ok": None,
+        "error": None,
+    }
+
+
 def _llm_export_bundle(out: dict, *, team_name: str, week: int | str) -> dict[str, str]:
     """Build downloadable export blobs + filenames for JSON/TOON/raw."""
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
@@ -115,8 +166,6 @@ def _llm_export_bundle(out: dict, *, team_name: str, week: int | str) -> dict[st
     context_toon = out.get("context_toon") or ""
     if not context_toon and out.get("context_sent"):
         try:
-            from analysis.llm_context import encode_toon
-
             context_toon = encode_toon(out.get("context_sent") or {})
         except Exception:  # noqa: BLE001
             context_toon = ""
@@ -143,7 +192,7 @@ def _llm_export_bundle(out: dict, *, team_name: str, week: int | str) -> dict[st
 def main() -> None:
     st.title("FantasyAnalysis")
     st.caption(
-        "ESPN league data + multi-source weekly/ROS ranks + news → LLM trade & waiver ideas."
+        "ESPN league + fused weekly/ROS ranks + news → Gemini trade & waiver ideas."
     )
 
     cfg = load_config()
@@ -248,7 +297,7 @@ def main() -> None:
             "Rankings",
             "Injuries / news",
             "Weakness flags",
-            "LLM recommendations",
+            "LLM recommendations/export",
             "Source status",
         ]
     )
@@ -321,32 +370,50 @@ def main() -> None:
 
     with tab_ranks:
         st.markdown(
-            "Weekly vs rest-of-season boards from FantasyPros + Sleeper "
-            "(+ ESPN projected points when available). Persist separately; switch below."
+            "**Fused** weekly / ROS boards (default **RRF** over FantasyPros + Sleeper "
+            "+ ESPN proj when present). Per-source boards stay in SQLite — expand below."
         )
-        horizon = st.radio("Horizon", ["ros", "weekly"], horizontal=True, format_func=lambda x: "ROS" if x == "ros" else "Weekly")
-        source = st.selectbox(
-            "Source",
-            ["consensus", "fantasypros", "fantasypros_mock", "sleeper", "espn", "all"],
-            index=0,
+        horizon = st.radio(
+            "Horizon",
+            ["ros", "weekly"],
+            horizontal=True,
+            format_func=lambda x: "ROS" if x == "ros" else "Weekly",
         )
-        if source == "all":
-            rdf = _rank_table(ranking_rows, horizon=horizon)
+        fused = _rank_table(ranking_rows, horizon=horizon, source_filter="consensus")
+        if fused.empty:
+            st.info("No fused rankings for this horizon — try Refresh Data.")
         else:
-            rdf = _rank_table(ranking_rows, horizon=horizon, source_filter=source)
-        if rdf.empty:
-            st.info("No rankings for this horizon/source — try Refresh Data.")
-        else:
-            positions = sorted({p for p in rdf["Pos"].tolist() if p != "—"})
+            positions = sorted({p for p in fused["Pos"].tolist() if p != "—"})
             default_pos = [p for p in ["QB", "RB", "WR", "TE", "DST", "K"] if p in positions] or positions
-            pos_filter = st.multiselect("Positions", positions, default=default_pos)
+            pos_filter = st.multiselect("Positions", positions, default=default_pos, key="rank_pos")
+            view = fused
             if pos_filter:
-                rdf = rdf[rdf["Pos"].isin(pos_filter)]
+                view = fused[fused["Pos"].isin(pos_filter)]
             st.dataframe(
-                rdf.sort_values(["Pos", "Rank", "Source"]),
+                view.sort_values(["Pos", "Rank"]),
                 use_container_width=True,
                 hide_index=True,
             )
+        with st.expander("Per-source boards (detail)"):
+            source = st.selectbox(
+                "Source",
+                ["fantasypros", "fantasypros_mock", "sleeper", "espn", "all"],
+                index=0,
+                key="rank_src_detail",
+            )
+            if source == "all":
+                detail = _rank_table(ranking_rows, horizon=horizon)
+                detail = detail[detail["Source"] != "consensus"] if not detail.empty else detail
+            else:
+                detail = _rank_table(ranking_rows, horizon=horizon, source_filter=source)
+            if detail.empty:
+                st.caption("No rows for that source/horizon.")
+            else:
+                st.dataframe(
+                    detail.sort_values(["Pos", "Rank", "Source"]),
+                    use_container_width=True,
+                    hide_index=True,
+                )
 
     with tab_news:
         st.markdown(
@@ -408,24 +475,117 @@ def main() -> None:
 
     with tab_recs:
         st.markdown(
-            "Builds structured league context (rosters, weekly + ROS ranks, injuries, "
-            "weakness flags, hunt positions) and asks the LLM for trade + waiver ideas. "
-            "**Never recommends QB/DST/K trades.** Start/sit uses weekly ranks when included."
+            "Export fused league context anytime for Claude-in-browser, or generate "
+            "recommendations with **Google Gemini**. Context uses fused weekly + ROS "
+            "skill ranks (no raw multi-source dumps). **Never recommends QB/DST/K trades.**"
         )
         if not team_names:
             st.info("Load league data first.")
         else:
             rec_team = st.selectbox("Your team", team_names, index=default_idx, key="rec_team")
             hunt = st.multiselect(
-                "Hunt positions (passed to LLM)",
+                "Hunt positions (passed to LLM / export)",
                 options=list(HUNT_POS_OPTIONS),
                 default=list(DEFAULT_HUNT_POS),
                 key="rec_hunt",
             )
             include_ss = st.checkbox("Include start/sit", value=True)
+
+            week = getattr(meta, "current_week", "?") if meta else "?"
+            export_pack = _build_export_pack(
+                team_name=rec_team,
+                hunt_positions=hunt,
+                meta=meta,
+                rosters=rosters,
+                players=players,
+                standings=standings,
+                rankings=ranking_rows,
+                free_agents=free_agents,
+                news_items=news_items,
+                include_start_sit=include_ss,
+            )
+            # Live pack always drives JSON/TOON download (matches current UI controls).
+            # Attach last generate's raw response when present.
+            out = st.session_state.get("llm_recs")
+            export_src = {
+                **export_pack,
+                "raw_response": (out or {}).get("raw_response"),
+                "result": (out or {}).get("result"),
+                "ok": (out or {}).get("ok"),
+                "error": (out or {}).get("error"),
+            }
+
+            bundle = _llm_export_bundle(export_src, team_name=rec_team, week=week)
+            stats = export_src.get("size_stats") or {}
+            wire = export_src.get("wire_format") or "toon"
+
+            st.subheader("Export for Claude / paste")
+            st.caption(
+                f"Packed **{wire.upper()}** context (fused skill ranks RB/WR/TE/QB; "
+                "DST/K + raw multi-source dumps omitted). No Gemini call required. "
+                f"≈ JSON {stats.get('json_chars', '?')} chars "
+                f"(~{stats.get('json_tokens_est', '?')} tok) vs TOON {stats.get('toon_chars', '?')} chars "
+                f"(~{stats.get('toon_tokens_est', '?')} tok; "
+                f"{stats.get('token_savings_pct_est', '?')}% fewer est. tokens)."
+            )
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                st.download_button(
+                    "Download full context JSON",
+                    data=bundle["context_json"],
+                    file_name=bundle["ctx_json_name"],
+                    mime="application/json",
+                    use_container_width=True,
+                    key="dl_llm_context",
+                )
+            with c2:
+                st.download_button(
+                    "Download packed TOON",
+                    data=bundle["context_toon"],
+                    file_name=bundle["ctx_toon_name"],
+                    mime="text/plain",
+                    use_container_width=True,
+                    key="dl_llm_context_toon",
+                    disabled=not bool(bundle["context_toon"]),
+                )
+            with c3:
+                st.download_button(
+                    "Download raw LLM response",
+                    data=bundle["raw_json"],
+                    file_name=bundle["raw_name"],
+                    mime="application/json",
+                    use_container_width=True,
+                    key="dl_llm_raw",
+                    disabled=not bool(export_src.get("raw_response") or export_src.get("result")),
+                )
+
+            with st.expander("Full context JSON (copy/paste)", expanded=False):
+                st.text_area(
+                    "context",
+                    value=bundle["context_json"],
+                    height=280,
+                    label_visibility="collapsed",
+                    key="llm_context_textarea",
+                )
+                st.caption(
+                    f"Filename suggestion: `{bundle['ctx_json_name']}` · "
+                    f"{len(bundle['context_json']):,} chars"
+                )
+            with st.expander(f"Packed context ({wire})"):
+                if wire == "toon" and bundle["context_toon"]:
+                    st.code(bundle["context_toon"], language="text")
+                    st.caption(f"{len(bundle['context_toon']):,} chars TOON")
+                else:
+                    sent = json.dumps(export_src.get("context_sent") or {}, indent=2, default=str)
+                    st.code(sent, language="json")
+                    st.caption(f"{len(sent):,} chars (packed JSON)")
+
+            st.divider()
+            st.subheader("Generate with Gemini")
+            st.caption(describe_setup())
             if st.button("Generate recommendations", type="primary"):
-                with st.spinner("Calling LLM…"):
-                    out = generate_recommendations(
+                with st.spinner("Calling Gemini…"):
+                    gen_out = generate_recommendations(
                         team_name=rec_team,
                         hunt_positions=hunt,
                         meta=meta,
@@ -437,7 +597,8 @@ def main() -> None:
                         news_items=news_items,
                         include_start_sit=include_ss,
                     )
-                st.session_state["llm_recs"] = out
+                st.session_state["llm_recs"] = gen_out
+                st.rerun()
 
             out = st.session_state.get("llm_recs")
             if out:
@@ -494,82 +655,16 @@ def main() -> None:
                                 ]
                             )
                             st.dataframe(sdf, use_container_width=True, hide_index=True)
-                else:
+                elif out.get("ok") is False:
                     st.error(out.get("error") or "LLM unavailable")
                     st.markdown(f"**Setup:** {out.get('setup') or describe_setup()}")
                     st.caption(
-                        "Weakness flags and rankings still work without an LLM — "
-                        "see other tabs."
+                        "Export above still works without Gemini — "
+                        "paste JSON into Claude in the browser."
                     )
-
-                week = getattr(meta, "current_week", "?") if meta else "?"
-                bundle = _llm_export_bundle(out, team_name=rec_team, week=week)
-                stats = out.get("size_stats") or {}
-                wire = out.get("wire_format") or "toon"
-                st.subheader("Export for Claude / paste")
-                st.caption(
-                    f"Ollama receives a **{wire.upper()}** pack (skill ranks RB/WR/TE/QB; DST/K omitted). "
-                    "Download full JSON for Claude in the browser, or TOON for a smaller paste. "
-                    f"Packed size ≈ JSON {stats.get('json_chars', '?')} chars "
-                    f"(~{stats.get('json_tokens_est', '?')} tok) vs TOON {stats.get('toon_chars', '?')} chars "
-                    f"(~{stats.get('toon_tokens_est', '?')} tok; "
-                    f"{stats.get('token_savings_pct_est', '?')}% fewer est. tokens)."
-                )
-                c1, c2, c3, c4 = st.columns(4)
-                with c1:
-                    st.download_button(
-                        "Download full context JSON",
-                        data=bundle["context_json"],
-                        file_name=bundle["ctx_json_name"],
-                        mime="application/json",
-                        use_container_width=True,
-                        key="dl_llm_context",
-                    )
-                with c2:
-                    st.download_button(
-                        "Download packed TOON",
-                        data=bundle["context_toon"],
-                        file_name=bundle["ctx_toon_name"],
-                        mime="text/plain",
-                        use_container_width=True,
-                        key="dl_llm_context_toon",
-                        disabled=not bool(bundle["context_toon"]),
-                    )
-                with c3:
-                    st.download_button(
-                        "Download raw LLM response",
-                        data=bundle["raw_json"],
-                        file_name=bundle["raw_name"],
-                        mime="application/json",
-                        use_container_width=True,
-                        key="dl_llm_raw",
-                        disabled=not bool(out.get("raw_response") or out.get("result")),
-                    )
-                with c4:
-                    if st.button("Clear LLM results", use_container_width=True, key="clear_llm"):
-                        st.session_state.pop("llm_recs", None)
-                        st.rerun()
-
-                with st.expander("Full context JSON (copy/paste)"):
-                    st.text_area(
-                        "context",
-                        value=bundle["context_json"],
-                        height=280,
-                        label_visibility="collapsed",
-                        key="llm_context_textarea",
-                    )
-                    st.caption(
-                        f"Filename suggestion: `{bundle['ctx_json_name']}` · "
-                        f"{len(bundle['context_json']):,} chars"
-                    )
-                with st.expander(f"Packed context sent to LLM ({wire})"):
-                    if wire == "toon" and bundle["context_toon"]:
-                        st.code(bundle["context_toon"], language="text")
-                        st.caption(f"{len(bundle['context_toon']):,} chars TOON")
-                    else:
-                        sent = json.dumps(out.get("context_sent") or {}, indent=2, default=str)
-                        st.code(sent, language="json")
-                        st.caption(f"{len(sent):,} chars (packed JSON)")
+                if st.button("Clear LLM results", use_container_width=False, key="clear_llm"):
+                    st.session_state.pop("llm_recs", None)
+                    st.rerun()
                 if out.get("raw_response"):
                     with st.expander("Raw LLM response"):
                         st.code(str(out.get("raw_response")), language="json")

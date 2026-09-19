@@ -119,11 +119,6 @@ def test_pack_context_skill_ranks_dominate():
                 {"name": "Week WR", "position": "WR", "rank": 2},
                 {"name": "Week DST", "position": "DST", "rank": 1},
             ],
-            "ros_by_source_sample": {
-                "fantasypros": [{"name": "x", "position": "RB", "rank": 1}] * 10,
-                "sleeper": [{"name": "y", "position": "WR", "rank": 1}] * 10,
-            },
-            "weekly_by_source_sample": {"espn": [{"name": "z", "position": "TE", "rank": 1}] * 5},
         },
         "free_agents_skill": [
             {"name": f"FA{i}", "position": "RB", "nfl_team": "NE"} for i in range(40)
@@ -146,6 +141,9 @@ def test_pack_context_skill_ranks_dominate():
     ros = packed["rankings"]["ros_top"]
     assert all(r["pos"] in {"RB", "WR", "TE", "QB"} for r in ros)
     assert not any(r["pos"] in {"DST", "K"} for r in ros)
+    # No per-source dumps in the LLM pack
+    assert "ros_fantasypros" not in packed["rankings"]
+    assert "ros_sleeper" not in packed["rankings"]
     assert packed["your_team"]["roster"][0]["name"] == "Player One"
     assert packed["your_team"]["roster"][0]["nfl"] == "KC"
     assert len(packed["free_agents_skill"]) <= 50

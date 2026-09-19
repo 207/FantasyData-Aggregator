@@ -9,3 +9,5 @@ beautifulsoup4>=4.12.0
 lxml>=5.0.0
 # 0.1.0 on PyPI is a stub; need the beta encoder (tabular TOON for LLM prompts)
 toon-format>=0.9.0b1
+# Google Gemini (default LLM)
+google-genai>=1.0.0

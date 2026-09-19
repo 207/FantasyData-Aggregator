@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-"""LLM backends: Ollama (default), optional OpenAI / Anthropic via user API keys."""
+"""LLM backends: Google Gemini (default), optional OpenAI / Anthropic via user API keys.
+
+Ollama has been removed as a default path. Set LLM_PROVIDER=ollama only if you
+intentionally keep a gated local path; Gemini free tier is the supported default.
+"""
 
 import json
 import logging
@@ -18,21 +22,29 @@ log = logging.getLogger(__name__)
 
 SCHEMA_KEYS = ("trades", "waivers", "start_sit")
 
+# Free-tier friendly stable Flash model (gemini-2.0-flash shut down mid-2026).
+DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
+
+
+def _gemini_api_key() -> str:
+    return (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
+
 
 def llm_config() -> dict[str, str]:
     return {
-        "provider": (os.getenv("LLM_PROVIDER", "ollama") or "ollama").strip().lower(),
-        "ollama_base_url": (os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434") or "").rstrip("/"),
-        "ollama_model": (os.getenv("OLLAMA_MODEL", "llama3.1:8b") or "llama3.1:8b").strip(),
-        # Default Ollama num_ctx is ~2048 — far too small for league JSON. Raise it.
-        "ollama_num_ctx": (os.getenv("OLLAMA_NUM_CTX", "16384") or "16384").strip(),
-        "ollama_num_predict": (os.getenv("OLLAMA_NUM_PREDICT", "2048") or "2048").strip(),
-        # TOON packs more detail into fewer tokens than compact JSON (default).
+        "provider": (os.getenv("LLM_PROVIDER", "gemini") or "gemini").strip().lower(),
+        "gemini_api_key": _gemini_api_key(),
+        "gemini_model": (os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL) or DEFAULT_GEMINI_MODEL).strip(),
         "context_format": (os.getenv("LLM_CONTEXT_FORMAT", "toon") or "toon").strip().lower(),
         "openai_api_key": (os.getenv("OPENAI_API_KEY") or "").strip(),
         "openai_model": (os.getenv("OPENAI_MODEL", "gpt-4o-mini") or "gpt-4o-mini").strip(),
         "anthropic_api_key": (os.getenv("ANTHROPIC_API_KEY") or "").strip(),
         "anthropic_model": (os.getenv("ANTHROPIC_MODEL", "claude-3-5-haiku-latest") or "").strip(),
+        # Gated legacy — not documented as the default path.
+        "ollama_base_url": (os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434") or "").rstrip("/"),
+        "ollama_model": (os.getenv("OLLAMA_MODEL", "llama3.1:8b") or "llama3.1:8b").strip(),
+        "ollama_num_ctx": (os.getenv("OLLAMA_NUM_CTX", "16384") or "16384").strip(),
+        "ollama_num_predict": (os.getenv("OLLAMA_NUM_PREDICT", "2048") or "2048").strip(),
     }
 
 
@@ -49,18 +61,62 @@ def describe_setup() -> str:
             "LLM_PROVIDER=anthropic — set ANTHROPIC_API_KEY in config/.env "
             f"(model: {cfg['anthropic_model']})."
         )
-    fmt = cfg.get("context_format") or "toon"
+    if provider == "ollama":
+        return (
+            f"LLM_PROVIDER=ollama (legacy/gated) at {cfg['ollama_base_url']} "
+            f"model `{cfg['ollama_model']}`. Prefer Gemini: set LLM_PROVIDER=gemini "
+            "and GEMINI_API_KEY from https://aistudio.google.com/apikey"
+        )
+    key = cfg["gemini_api_key"]
+    if not key:
+        return (
+            "Google Gemini is the default LLM. Set GEMINI_API_KEY (or GOOGLE_API_KEY) "
+            "in config/.env — get a free key at https://aistudio.google.com/apikey "
+            f"(model: {cfg['gemini_model']}). Optional: GEMINI_MODEL=gemini-2.5-flash-lite "
+            "for a lighter free-tier option."
+        )
     return (
-        f"Default Ollama at {cfg['ollama_base_url']} model `{cfg['ollama_model']}` "
-        f"(num_ctx={cfg['ollama_num_ctx']}, num_predict={cfg['ollama_num_predict']}, "
-        f"context={fmt}). "
-        "Install: https://ollama.com — then `ollama pull llama3.1:8b` "
-        "(or another 7B–14B for ~24GB Mac). Optional remote: point OLLAMA_BASE_URL "
-        "at a Windows RTX 3070 host later."
+        f"Gemini model `{cfg['gemini_model']}` "
+        f"(context={cfg.get('context_format') or 'toon'}). "
+        "Key loaded from GEMINI_API_KEY / GOOGLE_API_KEY."
     )
 
 
+def _gemini_chat(system: str, user: str, cfg: dict[str, str]) -> str:
+    if not cfg["gemini_api_key"]:
+        raise RuntimeError(
+            "GEMINI_API_KEY (or GOOGLE_API_KEY) is not set in config/.env. "
+            "Get a free key at https://aistudio.google.com/apikey — "
+            "Google AI Studio → Get API key → Create API key, then paste into config/.env."
+        )
+    try:
+        from google import genai
+        from google.genai import types
+    except ImportError as exc:
+        raise RuntimeError(
+            "google-genai package is not installed. Run: pip install google-genai"
+        ) from exc
+
+    client = genai.Client(api_key=cfg["gemini_api_key"])
+    config = types.GenerateContentConfig(
+        system_instruction=system,
+        temperature=0.3,
+        max_output_tokens=4096,
+        response_mime_type="application/json",
+    )
+    response = client.models.generate_content(
+        model=cfg["gemini_model"],
+        contents=user,
+        config=config,
+    )
+    text = (response.text or "").strip()
+    if not text:
+        raise RuntimeError("Gemini returned empty content")
+    return text
+
+
 def _ollama_chat(system: str, user: str, cfg: dict[str, str]) -> str:
+    """Legacy gated path — only used when LLM_PROVIDER=ollama."""
     url = f"{cfg['ollama_base_url']}/api/chat"
     try:
         num_ctx = max(2048, int(cfg.get("ollama_num_ctx") or 16384))
@@ -91,13 +147,6 @@ def _ollama_chat(system: str, user: str, cfg: dict[str, str]) -> str:
     msg = (data.get("message") or {}).get("content") or ""
     if not msg:
         raise RuntimeError("Ollama returned empty content")
-    prompt_eval = data.get("prompt_eval_count")
-    if prompt_eval is not None and prompt_eval >= num_ctx - 64:
-        log.warning(
-            "Ollama prompt_eval_count=%s near num_ctx=%s — context may still be truncated",
-            prompt_eval,
-            num_ctx,
-        )
     return msg
 
 
@@ -172,11 +221,10 @@ def _parse_json_object(text: str) -> dict[str, Any]:
 
 
 def _looks_like_recs(data: dict[str, Any]) -> bool:
-    """Reject hallucinated JSON that ignores our schema (common when context is truncated)."""
+    """Reject hallucinated JSON that ignores our schema."""
     has_list = any(isinstance(data.get(k), list) for k in SCHEMA_KEYS)
     if has_list:
         return True
-    # Accept empty-but-valid schema with notes only
     return all(k in data for k in ("trades", "waivers")) and isinstance(data.get("notes"), str)
 
 
@@ -195,8 +243,10 @@ def complete_json(system: str, user: str) -> tuple[dict[str, Any], str]:
             raw = _openai_chat(system, user, cfg)
         elif provider == "anthropic":
             raw = _anthropic_chat(system, user, cfg)
-        else:
+        elif provider == "ollama":
             raw = _ollama_chat(system, user, cfg)
+        else:
+            raw = _gemini_chat(system, user, cfg)
     except httpx.ConnectError as exc:
         raise RuntimeError(
             f"Cannot reach LLM ({provider}). {describe_setup()} Detail: {exc}"
@@ -222,7 +272,6 @@ def complete_json(system: str, user: str) -> tuple[dict[str, Any], str]:
         )
         raise RuntimeError(
             "LLM returned JSON that is not trade/waiver recommendations "
-            f"(keys={list(data.keys())}). Often caused by a too-small Ollama num_ctx. "
-            f"Raw preview: {raw[:400]}"
+            f"(keys={list(data.keys())}). Raw preview: {raw[:400]}"
         )
     return data, raw

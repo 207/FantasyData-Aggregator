@@ -2,10 +2,11 @@ from __future__ import annotations
 
 """Build structured context for LLM trade / waiver / start-sit recommendations.
 
-Default wire format for Ollama is TOON (Token-Oriented Object Notation) via the
-`toon-format` package — tabular arrays cut token use so we can send richer
-roster/rank/injury/FA detail than the old compacted JSON pack. Responses are
-still JSON for reliable parsing. JSON export remains available for Claude paste.
+Default wire format is TOON (Token-Oriented Object Notation) via the
+`toon-format` package — tabular arrays cut token use. Rankings sent to the LLM
+are the **fused** weekly + ROS boards only (not raw multi-source dumps).
+Responses are still JSON for reliable parsing. JSON/TOON export remains for
+Claude-in-browser paste.
 """
 
 import json
@@ -216,18 +217,12 @@ def build_recommendation_context(
             f for f in league_flags if f.get("trade_relevant") or f.get("level") == "Weak"
         ],
         "rankings": {
+            # Fused boards only — per-source ranks stay in SQLite / Rankings UI, not LLM context.
+            "ros_fused_top": ros_consensus[:80],
+            "weekly_fused_top": weekly_consensus[:80],
+            # Back-compat aliases for older export/tests
             "ros_consensus_top": ros_consensus[:80],
             "weekly_consensus_top": weekly_consensus[:80],
-            "ros_by_source_sample": {
-                "fantasypros": _rank_rows(rankings, horizon="ros", source="fantasypros", limit=40),
-                "sleeper": _rank_rows(rankings, horizon="ros", source="sleeper", limit=40),
-                "espn": _rank_rows(rankings, horizon="ros", source="espn", limit=40),
-            },
-            "weekly_by_source_sample": {
-                "fantasypros": _rank_rows(rankings, horizon="weekly", source="fantasypros", limit=30),
-                "sleeper": _rank_rows(rankings, horizon="weekly", source="sleeper", limit=30),
-                "espn": _rank_rows(rankings, horizon="weekly", source="espn", limit=30),
-            },
         },
         "free_agents_skill": fa_brief,
         "news_injuries": _news_for_context(news_items, limit=50),
@@ -236,10 +231,10 @@ def build_recommendation_context(
 
 def pack_context_for_llm(context: dict[str, Any]) -> dict[str, Any]:
     """
-    LLM-bound payload: richer than the old heavily compacted JSON pack.
+    LLM-bound payload: fused weekly + ROS skill boards, league, flags, news.
 
-    TOON token savings let us restore nfl_team, more ranks, FA, and injuries
-    while still fitting typical Ollama num_ctx. DST/K ranks stay omitted.
+    Per-source ranking dumps are intentionally omitted — fusion happens upstream.
+    DST/K ranks stay omitted.
     """
     raw = json.loads(json.dumps(context, default=str))
 
@@ -275,9 +270,8 @@ def pack_context_for_llm(context: dict[str, Any]) -> dict[str, Any]:
 
     your = raw.get("your_team") or {}
     ranks = raw.get("rankings") or {}
-    ros = ranks.get("ros_consensus_top") or []
-    weekly = ranks.get("weekly_consensus_top") or []
-    by_src = ranks.get("ros_by_source_sample") or {}
+    ros = ranks.get("ros_fused_top") or ranks.get("ros_consensus_top") or []
+    weekly = ranks.get("weekly_fused_top") or ranks.get("weekly_consensus_top") or []
 
     news_out: list[dict[str, Any]] = []
     for n in raw.get("news_injuries") or []:
@@ -333,8 +327,6 @@ def pack_context_for_llm(context: dict[str, Any]) -> dict[str, Any]:
         "rankings": {
             "ros_top": slim_rank(ros, 70),
             "weekly_top": slim_rank(weekly, 55),
-            "ros_fantasypros": slim_rank(by_src.get("fantasypros") or [], 25),
-            "ros_sleeper": slim_rank(by_src.get("sleeper") or [], 25),
         },
         "free_agents_skill": [
             {
@@ -348,8 +340,8 @@ def pack_context_for_llm(context: dict[str, Any]) -> dict[str, Any]:
     }
     packed["_packing"] = {
         "note": (
-            "Packed for LLM (skill ranks only; DST/K omitted). "
-            "Wire format is TOON by default — export JSON is untruncated full context."
+            "Packed for LLM: fused weekly+ROS skill ranks only (no per-source dumps; "
+            "DST/K omitted). Wire format TOON by default — export JSON is full context."
         ),
         "full_context_chars": len(json.dumps(context, default=str)),
         "format": context_format(),

@@ -1,8 +1,14 @@
 from __future__ import annotations
 
-"""Merge multi-source rankings into a consensus board keyed by normalized name."""
+"""Fuse multi-source rankings into one weekly + one ROS board.
 
+Default method is Reciprocal Rank Fusion (RRF). Optional mean / median averaging
+are available via FUSION_METHOD. Fused rows are stored with source=\"consensus\".
+"""
+
+import os
 import re
+import statistics
 import unicodedata
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -10,13 +16,16 @@ from typing import Any
 
 from ingestion.positions import normalize_position
 
-# Weights when averaging ranks across sources.
+# Legacy weights kept for mean fusion when FUSION_METHOD=mean (weighted).
 SOURCE_WEIGHTS = {
     "fantasypros": 0.7,
     "fantasypros_mock": 0.7,
     "sleeper": 0.3,
     "espn": 0.35,
 }
+
+# Classic Cormack/Clarke/Buettcher RRF constant (k=60).
+DEFAULT_RRF_K = 60
 
 # Map city/franchise phrases → nickname used by ESPN ("Patriots D/ST").
 _DST_ALIASES = {
@@ -112,19 +121,27 @@ def normalize_player_name(name: str, position: str | None = None) -> str:
     return text
 
 
+def fusion_method() -> str:
+    raw = (os.getenv("FUSION_METHOD", "rrf") or "rrf").strip().lower()
+    if raw in {"mean", "avg", "average"}:
+        return "mean"
+    if raw in {"median", "med"}:
+        return "median"
+    return "rrf"
 
 
-def build_consensus(
+def rrf_k() -> int:
+    try:
+        return max(1, int(os.getenv("FUSION_RRF_K", str(DEFAULT_RRF_K)) or DEFAULT_RRF_K))
+    except ValueError:
+        return DEFAULT_RRF_K
+
+
+def _bucket_source_ranks(
     source_rankings: list[list[dict[str, Any]]],
-    week: int,
-    horizon: str = "ros",
-) -> list[dict[str, Any]]:
-    """
-    Average weighted ranks by normalized player name within each position + horizon.
-
-    Each input row needs: name, position, rank, source. Optional horizon (default ros).
-    """
-    horizon = "weekly" if horizon == "weekly" else "ros"
+    horizon: str,
+) -> dict[tuple[str, str], dict[str, Any]]:
+    """Group per-source ranks by (normalized_name, position) for one horizon."""
     buckets: dict[tuple[str, str], dict[str, Any]] = {}
     for rows in source_rankings:
         for row in rows:
@@ -144,6 +161,7 @@ def build_consensus(
                     "ranks": [],
                     "weights": [],
                     "sources": [],
+                    "by_source": {},
                 },
             )
             if pos == "DST" and "d/st" in name.lower():
@@ -153,36 +171,95 @@ def build_consensus(
             except (KeyError, TypeError, ValueError):
                 continue
             src = str(row.get("source") or "unknown")
+            # One rank per source (keep best / first)
+            if src in entry["by_source"]:
+                continue
             weight = float(SOURCE_WEIGHTS.get(src, 0.4))
             entry["ranks"].append(rank)
             entry["weights"].append(weight)
-            if src not in entry["sources"]:
-                entry["sources"].append(src)
+            entry["sources"].append(src)
+            entry["by_source"][src] = rank
+    return buckets
 
+
+def _score_entry(entry: dict[str, Any], method: str, k: int) -> float:
+    """Lower is better for mean/median; higher is better for RRF (we negate later)."""
+    ranks = entry["ranks"]
+    if not ranks:
+        return float("inf")
+    if method == "rrf":
+        # Higher RRF score = better → return negative so ascending sort works.
+        score = sum(1.0 / (k + r) for r in ranks)
+        return -score
+    if method == "median":
+        return float(statistics.median(ranks))
+    # mean (weighted)
+    wsum = sum(entry["weights"]) or 1.0
+    return sum(r * w for r, w in zip(ranks, entry["weights"])) / wsum
+
+
+def build_consensus(
+    source_rankings: list[list[dict[str, Any]]],
+    week: int,
+    horizon: str = "ros",
+    method: str | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Fuse per-source ranks into one positional board for the given horizon.
+
+    Methods:
+      - rrf (default): score = Σ 1/(k + rank_s); re-rank within position
+      - mean: weighted average of ranks (legacy SOURCE_WEIGHTS)
+      - median: median of ranks across sources
+
+    Each input row needs: name, position, rank, source. Optional horizon (default ros).
+    Output rows use source=\"consensus\" and include fusion_method + fusion_score.
+    """
+    horizon = "weekly" if horizon == "weekly" else "ros"
+    method = (method or fusion_method()).lower()
+    if method not in {"rrf", "mean", "median"}:
+        method = "rrf"
+    k = rrf_k()
+
+    buckets = _bucket_source_ranks(source_rankings, horizon)
     by_pos: dict[str, list[dict[str, Any]]] = defaultdict(list)
     pulled = datetime.now(timezone.utc)
+
     for entry in buckets.values():
         if not entry["ranks"]:
             continue
-        wsum = sum(entry["weights"])
-        avg = sum(r * w for r, w in zip(entry["ranks"], entry["weights"])) / wsum
+        sort_key = _score_entry(entry, method, k)
+        if method == "rrf":
+            fusion_score = -sort_key  # positive RRF sum
+            avg_rank = round(statistics.mean(entry["ranks"]), 2)
+        elif method == "median":
+            fusion_score = sort_key
+            avg_rank = round(sort_key, 2)
+        else:
+            fusion_score = sort_key
+            avg_rank = round(sort_key, 2)
+
         by_pos[entry["position"]].append(
             {
                 "name": entry["name"],
                 "position": entry["position"],
-                "avg_rank": round(avg, 2),
+                "avg_rank": avg_rank,
+                "fusion_score": round(fusion_score, 6),
+                "fusion_method": method,
                 "sources": ",".join(entry["sources"]),
                 "source": "consensus",
                 "horizon": horizon,
                 "week": week,
                 "pulled_at": pulled,
+                "_sort": sort_key,
             }
         )
 
     consensus: list[dict[str, Any]] = []
     for _pos, items in by_pos.items():
-        items.sort(key=lambda x: x["avg_rank"])
+        items.sort(key=lambda x: (x["_sort"], x["name"]))
         for i, item in enumerate(items, start=1):
+            item.pop("_sort", None)
             consensus.append({**item, "rank": i, "tier": (i - 1) // 6 + 1})
     return consensus
 
@@ -190,9 +267,10 @@ def build_consensus(
 def build_consensus_both(
     source_rankings: list[list[dict[str, Any]]],
     week: int,
+    method: str | None = None,
 ) -> list[dict[str, Any]]:
-    return build_consensus(source_rankings, week, horizon="ros") + build_consensus(
-        source_rankings, week, horizon="weekly"
+    return build_consensus(source_rankings, week, horizon="ros", method=method) + build_consensus(
+        source_rankings, week, horizon="weekly", method=method
     )
 
 

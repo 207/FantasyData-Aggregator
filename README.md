@@ -1,6 +1,6 @@
 # FantasyAnalysis
 
-Local ESPN fantasy analyzer: league data + **weekly/ROS multi-source rankings** + news/injuries + basic weakness flags → **LLM recommendations** (Ollama by default).
+Local ESPN fantasy analyzer: league data + **fused weekly/ROS rankings** + news/injuries + basic weakness flags → **LLM recommendations** (Google Gemini by default).
 
 Design notes: [`docs/fantasy-football-analyzer-design.md`](docs/fantasy-football-analyzer-design.md) · Build plan: [`docs/build-plan.md`](docs/build-plan.md)
 
@@ -9,12 +9,16 @@ Design notes: [`docs/fantasy-football-analyzer-design.md`](docs/fantasy-football
 | Keep | Role |
 |---|---|
 | ESPN pull | Rosters, standings, matchups, free agents, roster slots |
-| Rankings | **Weekly** and **ROS** from FantasyPros + Sleeper (+ ESPN projected points when present) |
+| Rank fusion | FantasyPros + Sleeper (+ ESPN proj) → one **weekly** + one **ROS** board via **RRF** (default) |
 | News / injury | ESPN public news API + Sleeper `injury_status` |
 | Weakness flags | Simple ROS depth vs starter slots (no package math) |
-| LLM recs | TOON (default) or JSON context → JSON trades + waivers (+ optional start/sit) |
+| LLM recs | Fused boards + league/flags/news → Gemini (TOON/JSON) → JSON trades + waivers |
 
-**Removed:** heavy analytical trade finder (1-for-1 fairness, 2-for-1 constructors, long scoring heuristics). QB/DST/K trades are never recommended.
+**Removed:** heavy analytical trade finder; packing raw multi-source ranks into the LLM; Ollama as the default LLM path. QB/DST/K trades are never recommended.
+
+## Rank fusion (why RRF)
+
+Sources disagree on absolute ranks and coverage. **Reciprocal Rank Fusion** scores each player as `Σ 1/(k + rank_s)` (default `k=60`) across FantasyPros, Sleeper, and ESPN when present, then re-ranks within position. That rewards agreement near the top without needing calibrated score scales. Optional `FUSION_METHOD=mean` or `median` averages ranks instead.
 
 ## Run the app
 
@@ -30,51 +34,35 @@ streamlit run app.py --server.port 3847 --server.address 127.0.0.1
 
 Open [http://127.0.0.1:3847](http://127.0.0.1:3847).
 
-If **Refresh Data** fails every live source with `No module named 'importlib.resources'`, the venv or a long-lived Streamlit process is pointing at a removed Homebrew Python build (common after `brew upgrade`). Stop Streamlit, recreate `.venv` as above, reinstall requirements, and start again. Old terminals that used to run the app can be closed — they are not the server after a restart.
+If **Refresh Data** fails every live source with `No module named 'importlib.resources'`, the venv or a long-lived Streamlit process is pointing at a removed Homebrew Python build. Stop Streamlit, recreate `.venv`, reinstall requirements, and start again.
 
 ```bash
-# find / kill stale app servers
 lsof -nP -iTCP:3847 -sTCP:LISTEN
 pkill -f 'streamlit run app.py'   # only if you intend to stop FantasyAnalysis
 ```
-## Ollama (default LLM)
 
-On this MacBook Air, Ollama is installed via Homebrew (`brew install ollama`) at `/opt/homebrew/bin/ollama` and runs as a LaunchAgent (`brew services start ollama`). No `Ollama.app` GUI is required.
+## Google Gemini (default LLM)
 
-If a terminal still says `command not found: ollama`, open a **new** terminal (or ensure Homebrew is on PATH: `eval "$(/opt/homebrew/bin/brew shellenv)"`).
-
-```bash
-brew services start ollama   # API at http://127.0.0.1:11434
-ollama pull llama3.1:8b      # ~4.9 GB on disk (Q4_K_M)
-# alternatives: mistral, qwen2.5:14b, llama3.2:3b (lighter)
-```
-
-Confirm: `curl -s http://127.0.0.1:11434/api/tags` or `ollama list`.
-
-In `config/.env` (from `.env.example` if needed):
+1. Open [Google AI Studio](https://aistudio.google.com/apikey) → **Get API key** → create a key (free tier).
+2. Put it in `config/.env`:
 
 ```bash
-LLM_PROVIDER=ollama
-OLLAMA_BASE_URL=http://127.0.0.1:11434
-OLLAMA_MODEL=llama3.1:8b
-OLLAMA_NUM_CTX=16384      # default ~2048 truncates league JSON → empty/garbage recs
-OLLAMA_NUM_PREDICT=2048
-LLM_CONTEXT_FORMAT=toon   # toon (default, fewer tokens) | json
+LLM_PROVIDER=gemini
+GEMINI_API_KEY=your_key_here
+# or: GOOGLE_API_KEY=your_key_here
+GEMINI_MODEL=gemini-2.5-flash   # free-tier Flash; try gemini-2.5-flash-lite
+LLM_CONTEXT_FORMAT=toon         # toon (default) | json
+FUSION_METHOD=rrf
+FUSION_RRF_K=60
 ```
 
-In the app: **Refresh Data**, open **LLM recommendations**, click **Generate recommendations**.
+3. In the app: **Refresh Data** → **LLM recommendations** → **Generate recommendations**.
 
-The UI sends a **TOON** (Token-Oriented Object Notation) context pack to Ollama by default — tabular arrays cut ~30–50% vs compact JSON so we can include more roster/rank/FA/injury detail in the same `num_ctx`. Set `LLM_CONTEXT_FORMAT=json` to send JSON instead. The model is prompted to **reply in JSON** for parsing. Use **Download full context JSON** (Claude-in-browser) or **Download packed TOON**; **Download raw LLM response** captures model output too.
+The UI sends a **TOON** pack with **fused** weekly + ROS skill ranks (not raw FantasyPros/Sleeper dumps), plus league/flags/news. Use **Download full context JSON** for Claude-in-browser, or **Download packed TOON**. If the key is missing, the app shows setup instructions and still lets you export context.
 
-If Ollama is down, the app still shows league/ranks/flags and prints setup instructions — it does not crash.
+### Optional other providers
 
-### Optional cloud LLMs
-
-Set `LLM_PROVIDER=openai` or `anthropic` and your own `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` in `config/.env`. No Cursor keys are used.
-
-### Optional remote Ollama (Windows RTX 3070)
-
-Later you can run Ollama on a Windows box with an RTX 3070 and point `OLLAMA_BASE_URL` at that host (e.g. `http://192.168.x.x:11434`) for faster ~7B inference.
+Set `LLM_PROVIDER=openai` or `anthropic` with your own API keys. No Cursor keys are used.
 
 ## ESPN (optional)
 
@@ -92,24 +80,25 @@ Without cookies, demo league data is used.
 | FantasyPros | scrape PPR weekly | scrape ROS PPR overall | mock fallback |
 | Sleeper | trending buzz board | `search_rank` | free API |
 | ESPN | projected points | same when available | third source; live league only |
+| **Fused board** | RRF / mean / median | same | what Rankings tab + LLM use |
 | ESPN news | — | — | `site.api.espn.com` headlines |
 | Sleeper injury | — | — | `injury_status` flags |
 
 ## UI tabs
 
 - **League** — roster / standings / matchups / FA
-- **Rankings** — weekly vs ROS, filter by source
+- **Rankings** — fused weekly vs ROS (per-source in expander)
 - **Injuries / news**
 - **Weakness flags** — positional Weak/Thin/OK
-- **LLM recommendations** — generate button + results
+- **LLM recommendations/export** — JSON/TOON download anytime + Gemini generate
 - **Source status**
 
 ## Project layout
 
 ```
 app.py                 # Streamlit UI
-analysis/              # weakness flags, LLM client/context/recs (thin trade helpers)
-ingestion/             # ESPN, FantasyPros, Sleeper, ESPN ranks, news, consensus
+analysis/              # weakness flags, LLM client/context/recs
+ingestion/             # ESPN, FantasyPros, Sleeper, news, rank fusion (consensus.py)
 storage/               # SQLite
-config/.env.example    # ESPN + LLM + rankings
+config/.env.example    # ESPN + Gemini + fusion
 ```
