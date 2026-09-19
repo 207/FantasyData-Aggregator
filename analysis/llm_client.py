@@ -9,8 +9,9 @@ intentionally keep a gated local path; Gemini free tier is the supported default
 import json
 import logging
 import os
+import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 from dotenv import load_dotenv
@@ -24,6 +25,90 @@ SCHEMA_KEYS = ("trades", "waivers", "start_sit")
 
 # Best free-tier Flash model (Google: "most intelligent Flash"; 2.5 blocked for new keys).
 DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
+
+# High-demand / rate-limit retries: wait base, then 2x, 4x, … before each next try.
+DEFAULT_RETRY_MAX = 6
+DEFAULT_RETRY_BASE_SECONDS = 2.0
+
+
+def _retry_settings() -> tuple[int, float]:
+    try:
+        max_attempts = max(1, int(os.getenv("LLM_RETRY_MAX", str(DEFAULT_RETRY_MAX)) or DEFAULT_RETRY_MAX))
+    except ValueError:
+        max_attempts = DEFAULT_RETRY_MAX
+    try:
+        base = float(os.getenv("LLM_RETRY_BASE_SECONDS", str(DEFAULT_RETRY_BASE_SECONDS)) or DEFAULT_RETRY_BASE_SECONDS)
+        base = max(0.5, base)
+    except ValueError:
+        base = DEFAULT_RETRY_BASE_SECONDS
+    return max_attempts, base
+
+
+def _error_status_code(exc: BaseException) -> int | None:
+    for attr in ("code", "status_code", "status"):
+        val = getattr(exc, attr, None)
+        if isinstance(val, int):
+            return val
+        if isinstance(val, str) and val.isdigit():
+            return int(val)
+    resp = getattr(exc, "response", None)
+    if resp is not None:
+        code = getattr(resp, "status_code", None)
+        if isinstance(code, int):
+            return code
+    return None
+
+
+def _is_retryable_llm_error(exc: BaseException) -> bool:
+    """True for transient overload / rate-limit failures worth backing off."""
+    code = _error_status_code(exc)
+    if code in {408, 429, 500, 502, 503, 504}:
+        return True
+    msg = str(exc).lower()
+    needles = (
+        "high demand",
+        "try again",
+        "unavailable",
+        "resource_exhausted",
+        "resource exhausted",
+        "rate limit",
+        "quota exceeded",
+        "temporarily",
+        "overloaded",
+        "503",
+        "429",
+    )
+    return any(n in msg for n in needles)
+
+
+def _call_with_backoff(fn: Callable[[], str], *, label: str) -> str:
+    """Run fn; on retryable errors sleep base, 2x, 4x, … then retry until max attempts."""
+    max_attempts, base = _retry_settings()
+    last: BaseException | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return fn()
+        except Exception as exc:  # noqa: BLE001
+            last = exc
+            if attempt >= max_attempts or not _is_retryable_llm_error(exc):
+                raise
+            wait = base * (2 ** (attempt - 1))
+            log.warning(
+                "%s attempt %s/%s failed (%s); waiting %.1fs then retrying",
+                label,
+                attempt,
+                max_attempts,
+                exc,
+                wait,
+            )
+            time.sleep(wait)
+    assert last is not None
+    raise last
+
+
+def retry_settings() -> tuple[int, float]:
+    """Public: (max_attempts, base_seconds) for UI captions / callers."""
+    return _retry_settings()
 
 
 def _gemini_api_key() -> str:
@@ -104,15 +189,19 @@ def _gemini_chat(system: str, user: str, cfg: dict[str, str]) -> str:
         max_output_tokens=4096,
         response_mime_type="application/json",
     )
-    response = client.models.generate_content(
-        model=cfg["gemini_model"],
-        contents=user,
-        config=config,
-    )
-    text = (response.text or "").strip()
-    if not text:
-        raise RuntimeError("Gemini returned empty content")
-    return text
+
+    def _once() -> str:
+        response = client.models.generate_content(
+            model=cfg["gemini_model"],
+            contents=user,
+            config=config,
+        )
+        text = (response.text or "").strip()
+        if not text:
+            raise RuntimeError("Gemini returned empty content")
+        return text
+
+    return _call_with_backoff(_once, label=f"Gemini:{cfg['gemini_model']}")
 
 
 def _ollama_chat(system: str, user: str, cfg: dict[str, str]) -> str:
@@ -239,14 +328,20 @@ def complete_json(system: str, user: str) -> tuple[dict[str, Any], str]:
     provider = cfg["provider"]
     raw = ""
     try:
-        if provider == "openai":
-            raw = _openai_chat(system, user, cfg)
-        elif provider == "anthropic":
-            raw = _anthropic_chat(system, user, cfg)
-        elif provider == "ollama":
-            raw = _ollama_chat(system, user, cfg)
+        def _dispatch() -> str:
+            if provider == "openai":
+                return _openai_chat(system, user, cfg)
+            if provider == "anthropic":
+                return _anthropic_chat(system, user, cfg)
+            if provider == "ollama":
+                return _ollama_chat(system, user, cfg)
+            return _gemini_chat(system, user, cfg)
+
+        # Gemini already retries inside _gemini_chat; wrap others the same way.
+        if provider == "gemini" or provider not in {"openai", "anthropic", "ollama"}:
+            raw = _dispatch()
         else:
-            raw = _gemini_chat(system, user, cfg)
+            raw = _call_with_backoff(_dispatch, label=f"LLM:{provider}")
     except httpx.ConnectError as exc:
         raise RuntimeError(
             f"Cannot reach LLM ({provider}). {describe_setup()} Detail: {exc}"
