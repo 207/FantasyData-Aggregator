@@ -14,6 +14,14 @@ ESPN_NEWS_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/news
 SLEEPER_PLAYERS_URL = "https://api.sleeper.app/v1/players/nfl"
 
 
+# ESPN's edge blocks some custom User-Agents (incl. FantasyAnalysis/*) with 403.
+# Default httpx UA and common mobile clients succeed; keep Accept explicit.
+_ESPN_HTTP_HEADERS = {
+    "User-Agent": "python-httpx/0.28.1",
+    "Accept": "application/json",
+}
+
+
 def fetch_espn_news(limit: int = 50) -> dict[str, Any]:
     """
     Free ESPN site API — headlines for NFL. No auth.
@@ -22,7 +30,7 @@ def fetch_espn_news(limit: int = 50) -> dict[str, Any]:
     """
     pulled = datetime.now(timezone.utc)
     try:
-        with httpx.Client(timeout=25.0, headers={"User-Agent": "FantasyAnalysis/0.4"}) as client:
+        with httpx.Client(timeout=25.0, headers=_ESPN_HTTP_HEADERS) as client:
             resp = client.get(ESPN_NEWS_URL, params={"limit": limit})
             resp.raise_for_status()
             data = resp.json()
