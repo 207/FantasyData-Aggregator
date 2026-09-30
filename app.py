@@ -556,7 +556,11 @@ def main() -> None:
                     mime="application/json",
                     use_container_width=True,
                     key="dl_llm_raw",
-                    disabled=not bool(export_src.get("raw_response") or export_src.get("result")),
+                    disabled=not bool(
+                        export_src.get("raw_response")
+                        or export_src.get("result")
+                        or (export_src.get("ok") is False and export_src.get("error"))
+                    ),
                 )
 
             with st.expander("Full context JSON (copy/paste)", expanded=False):
@@ -588,19 +592,32 @@ def main() -> None:
                 f"(starts at {_retry_base:g}s, doubles each try; up to {_retry_max} attempts)."
             )
             if st.button("Generate recommendations", type="primary"):
-                with st.spinner("Calling Gemini… (retries with backoff if busy)"):
-                    gen_out = generate_recommendations(
-                        team_name=rec_team,
-                        hunt_positions=hunt,
-                        meta=meta,
-                        rosters=rosters,
-                        players=players,
-                        standings=standings,
-                        rankings=ranking_rows,
-                        free_agents=free_agents,
-                        news_items=news_items,
-                        include_start_sit=include_ss,
-                    )
+                try:
+                    with st.spinner(
+                        "Calling Gemini… (retries with backoff if busy; "
+                        "re-asks for valid JSON if parse fails)"
+                    ):
+                        gen_out = generate_recommendations(
+                            team_name=rec_team,
+                            hunt_positions=hunt,
+                            meta=meta,
+                            rosters=rosters,
+                            players=players,
+                            standings=standings,
+                            rankings=ranking_rows,
+                            free_agents=free_agents,
+                            news_items=news_items,
+                            include_start_sit=include_ss,
+                        )
+                except Exception as exc:  # noqa: BLE001 — never white-screen on generate
+                    gen_out = {
+                        **export_pack,
+                        "ok": False,
+                        "error": f"Unexpected generate failure: {exc}",
+                        "result": None,
+                        "raw_response": None,
+                        "setup": describe_setup(),
+                    }
                 st.session_state["llm_recs"] = gen_out
                 st.rerun()
 
@@ -663,15 +680,22 @@ def main() -> None:
                     st.error(out.get("error") or "LLM unavailable")
                     st.markdown(f"**Setup:** {out.get('setup') or describe_setup()}")
                     st.caption(
-                        "Export above still works without Gemini — "
-                        "paste JSON into Claude in the browser."
+                        "Export above still works — download context or raw LLM output "
+                        "(when present) and paste into Claude in the browser."
                     )
                 if st.button("Clear LLM results", use_container_width=False, key="clear_llm"):
                     st.session_state.pop("llm_recs", None)
                     st.rerun()
                 if out.get("raw_response"):
-                    with st.expander("Raw LLM response"):
+                    with st.expander("Raw LLM response", expanded=out.get("ok") is False):
                         st.code(str(out.get("raw_response")), language="json")
+                        st.download_button(
+                            "Download raw LLM text",
+                            data=str(out.get("raw_response")),
+                            file_name="fantasy-llm-raw-failed.txt",
+                            mime="text/plain",
+                            key="dl_llm_raw_failed_text",
+                        )
 
     with tab_status:
         st.markdown("Adapter health from the last refresh — failures degrade to mock/cache.")

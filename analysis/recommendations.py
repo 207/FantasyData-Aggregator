@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from analysis.llm_client import complete_json, describe_setup
+from analysis.llm_client import LLMParseError, complete_json, describe_setup
 from analysis.llm_context import (
     SYSTEM_PROMPT,
     build_recommendation_context,
@@ -68,6 +68,31 @@ def _filter_trades(trades: list[dict], context: dict[str, Any]) -> list[dict]:
     return cleaned[:5]
 
 
+def _failure_payload(
+    *,
+    error: str,
+    context: dict[str, Any],
+    context_sent: dict[str, Any],
+    context_toon: str,
+    size_stats: dict[str, Any],
+    wire: str,
+    setup: str,
+    raw_response: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "error": error,
+        "context": context,
+        "context_sent": context_sent,
+        "context_toon": context_toon,
+        "size_stats": {k: size_stats[k] for k in size_stats if k not in ("json_compact", "toon")},
+        "wire_format": wire,
+        "raw_response": raw_response,
+        "result": None,
+        "setup": setup,
+    }
+
+
 def generate_recommendations(
     *,
     team_name: str,
@@ -87,6 +112,7 @@ def generate_recommendations(
       context_toon, size_stats, wire_format, raw_response, result, setup
     }.
     On LLM failure, still returns full context so the UI can export/paste.
+    Never raises — parse/network errors become ok=False with a clear error.
     """
     hunt = [p for p in (hunt_positions or list(TRADE_POS)) if p in TRADE_POS] or list(TRADE_POS)
     context = build_recommendation_context(
@@ -108,19 +134,28 @@ def generate_recommendations(
     setup = describe_setup()
     try:
         raw, raw_text = complete_json(SYSTEM_PROMPT, build_user_prompt(context, packed=True, fmt=wire))
-    except RuntimeError as exc:
-        return {
-            "ok": False,
-            "error": str(exc),
-            "context": context,
-            "context_sent": context_sent,
-            "context_toon": context_toon,
-            "size_stats": {k: size_stats[k] for k in size_stats if k not in ("json_compact", "toon")},
-            "wire_format": wire,
-            "raw_response": None,
-            "result": None,
-            "setup": setup,
-        }
+    except LLMParseError as exc:
+        return _failure_payload(
+            error=str(exc),
+            context=context,
+            context_sent=context_sent,
+            context_toon=context_toon,
+            size_stats=size_stats,
+            wire=wire,
+            setup=setup,
+            raw_response=exc.raw or None,
+        )
+    except Exception as exc:  # noqa: BLE001 — never crash Streamlit on generate
+        return _failure_payload(
+            error=str(exc),
+            context=context,
+            context_sent=context_sent,
+            context_toon=context_toon,
+            size_stats=size_stats,
+            wire=wire,
+            setup=setup,
+            raw_response=getattr(exc, "raw", None),
+        )
 
     result = {
         "trades": _filter_trades(raw.get("trades") or [], context),

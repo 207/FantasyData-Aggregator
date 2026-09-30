@@ -9,6 +9,7 @@ intentionally keep a gated local path; Gemini free tier is the supported default
 import json
 import logging
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -22,6 +23,17 @@ load_dotenv(CONFIG_DIR / ".env")
 log = logging.getLogger(__name__)
 
 SCHEMA_KEYS = ("trades", "waivers", "start_sit")
+
+# Parse-failure re-ask attempts (after the first generate).
+DEFAULT_JSON_PARSE_RETRIES = 2
+
+
+class LLMParseError(RuntimeError):
+    """JSON parse / schema failure that still carries the raw model text."""
+
+    def __init__(self, message: str, *, raw: str = ""):
+        super().__init__(message)
+        self.raw = raw
 
 # Best free-tier Flash model (Google: "most intelligent Flash"; 2.5 blocked for new keys).
 DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
@@ -290,23 +302,135 @@ def _anthropic_chat(system: str, user: str, cfg: dict[str, str]) -> str:
     return text
 
 
-def _parse_json_object(text: str) -> dict[str, Any]:
-    cleaned = text.strip()
-    if cleaned.startswith("```"):
-        cleaned = cleaned.strip("`")
-        if cleaned.startswith("json"):
-            cleaned = cleaned[4:].strip()
+def _json_parse_retries() -> int:
     try:
-        data = json.loads(cleaned)
-    except json.JSONDecodeError:
-        start, end = cleaned.find("{"), cleaned.rfind("}")
-        if start >= 0 and end > start:
-            data = json.loads(cleaned[start : end + 1])
-        else:
-            raise RuntimeError(f"LLM did not return valid JSON. Preview: {cleaned[:400]}") from None
-    if not isinstance(data, dict):
-        raise RuntimeError("LLM JSON root must be an object")
-    return data
+        return max(0, int(os.getenv("LLM_JSON_PARSE_RETRIES", str(DEFAULT_JSON_PARSE_RETRIES))))
+    except ValueError:
+        return DEFAULT_JSON_PARSE_RETRIES
+
+
+def _strip_markdown_fences(text: str) -> str:
+    cleaned = (text or "").strip()
+    if not cleaned.startswith("```"):
+        return cleaned
+    # Drop opening fence (``` or ```json)
+    first_nl = cleaned.find("\n")
+    if first_nl >= 0:
+        cleaned = cleaned[first_nl + 1 :]
+    else:
+        cleaned = cleaned.lstrip("`")
+        if cleaned.lower().startswith("json"):
+            cleaned = cleaned[4:].lstrip()
+    if cleaned.rstrip().endswith("```"):
+        cleaned = cleaned.rstrip()[:-3]
+    return cleaned.strip()
+
+
+def _extract_json_object(text: str) -> str | None:
+    """Slice outermost `{...}` only when surrounding prose is present."""
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    before = text[:start].strip()
+    after = text[end + 1 :].strip().strip("`").strip()
+    # Surrounding prose with a closed object — safe to slice.
+    if before or after:
+        return text[start : end + 1]
+    return None
+
+
+def _repair_trailing_commas(text: str) -> str:
+    """Remove trailing commas before } or ] (common Gemini glitch)."""
+    return re.sub(r",(\s*[}\]])", r"\1", text)
+
+
+def _close_truncated_json(text: str) -> str | None:
+    """
+    Best-effort close for truncated objects/arrays.
+    Skips repair when an open string looks unterminated.
+    """
+    in_string = False
+    escape = False
+    stack: list[str] = []
+    for ch in text:
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch in "{[":
+            stack.append("}" if ch == "{" else "]")
+        elif ch in "}]":
+            if not stack or stack[-1] != ch:
+                return None
+            stack.pop()
+    if in_string or not stack:
+        return None
+    trimmed = text.rstrip()
+    for sep in (",", ":"):
+        if trimmed.endswith(sep):
+            trimmed = trimmed[:-1].rstrip()
+            break
+    return trimmed + "".join(reversed(stack))
+
+
+def _candidate_json_strings(text: str) -> list[str]:
+    """Ordered unique candidates to try with json.loads."""
+    cleaned = _strip_markdown_fences(text)
+    repaired_full = _repair_trailing_commas(cleaned)
+    closed_full = _close_truncated_json(repaired_full) or _close_truncated_json(cleaned)
+    extracted = _extract_json_object(cleaned)
+    repaired_ext = _repair_trailing_commas(extracted) if extracted else None
+    closed_ext = None
+    if extracted:
+        closed_ext = _close_truncated_json(repaired_ext or extracted)
+    out: list[str] = []
+    for cand in (
+        cleaned,
+        repaired_full,
+        closed_full,
+        extracted,
+        repaired_ext,
+        closed_ext,
+    ):
+        if cand and cand not in out:
+            out.append(cand)
+    return out
+
+
+def _parse_json_object(text: str) -> dict[str, Any]:
+    """
+    Parse a JSON object from model text.
+
+    Strips markdown fences, extracts the outermost object, repairs common
+    Gemini glitches (trailing commas, mild truncation). Never raises
+    json.JSONDecodeError — always LLMParseError / RuntimeError.
+    """
+    last_err: json.JSONDecodeError | None = None
+    for candidate in _candidate_json_strings(text):
+        try:
+            data = json.loads(candidate)
+        except json.JSONDecodeError as exc:
+            last_err = exc
+            continue
+        if not isinstance(data, dict):
+            raise LLMParseError(
+                "LLM JSON root must be an object",
+                raw=text,
+            )
+        return data
+
+    preview = (text or "")[:400]
+    detail = f"{last_err}" if last_err else "no JSON object found"
+    raise LLMParseError(
+        f"LLM did not return valid JSON ({detail}). Preview: {preview}",
+        raw=text or "",
+    )
 
 
 def _looks_like_recs(data: dict[str, Any]) -> bool:
@@ -317,59 +441,105 @@ def _looks_like_recs(data: dict[str, Any]) -> bool:
     return all(k in data for k in ("trades", "waivers")) and isinstance(data.get("notes"), str)
 
 
+def _dispatch_chat(system: str, user: str, cfg: dict[str, str]) -> str:
+    provider = cfg["provider"]
+
+    def _once() -> str:
+        if provider == "openai":
+            return _openai_chat(system, user, cfg)
+        if provider == "anthropic":
+            return _anthropic_chat(system, user, cfg)
+        if provider == "ollama":
+            return _ollama_chat(system, user, cfg)
+        return _gemini_chat(system, user, cfg)
+
+    # Gemini already retries inside _gemini_chat; wrap others the same way.
+    if provider == "gemini" or provider not in {"openai", "anthropic", "ollama"}:
+        return _once()
+    return _call_with_backoff(_once, label=f"LLM:{provider}")
+
+
+def _repair_user_prompt(bad_raw: str, parse_error: str) -> str:
+    return (
+        "Your previous reply was not valid JSON and could not be parsed.\n"
+        f"Parser error: {parse_error}\n\n"
+        "Reply again with ONLY a single valid JSON object (no markdown fences, "
+        "no commentary). Required keys: trades (array), waivers (array), "
+        "start_sit (array), notes (string). Fix any trailing commas, missing "
+        "commas, or truncated braces.\n\n"
+        "Invalid previous output (for reference — do not repeat the mistake):\n"
+        f"{(bad_raw or '')[:3500]}"
+    )
+
+
 def complete_json(system: str, user: str) -> tuple[dict[str, Any], str]:
     """
     Call the configured LLM and parse a JSON object response.
 
     Returns (parsed_dict, raw_text).
-    Raises RuntimeError with a user-facing message on setup/network/parse failures.
+    Raises RuntimeError / LLMParseError with a user-facing message on failure.
+    On parse failure, re-asks the model up to LLM_JSON_PARSE_RETRIES times
+    for valid JSON only. LLMParseError.raw always carries the last raw text.
     """
     cfg = llm_config()
     provider = cfg["provider"]
     raw = ""
-    try:
-        def _dispatch() -> str:
-            if provider == "openai":
-                return _openai_chat(system, user, cfg)
-            if provider == "anthropic":
-                return _anthropic_chat(system, user, cfg)
-            if provider == "ollama":
-                return _ollama_chat(system, user, cfg)
-            return _gemini_chat(system, user, cfg)
+    parse_retries = _json_parse_retries()
+    prompt_user = user
+    last_parse_exc: BaseException | None = None
 
-        # Gemini already retries inside _gemini_chat; wrap others the same way.
-        if provider == "gemini" or provider not in {"openai", "anthropic", "ollama"}:
-            raw = _dispatch()
-        else:
-            raw = _call_with_backoff(_dispatch, label=f"LLM:{provider}")
-    except httpx.ConnectError as exc:
-        raise RuntimeError(
-            f"Cannot reach LLM ({provider}). {describe_setup()} Detail: {exc}"
-        ) from exc
-    except httpx.HTTPStatusError as exc:
-        body = (exc.response.text or "")[:300]
-        log.error("LLM HTTP %s (%s): %s", exc.response.status_code, provider, body)
-        raise RuntimeError(
-            f"LLM HTTP error ({provider}): {exc.response.status_code}. "
-            f"See logs for details. {describe_setup()}"
-        ) from exc
-    except Exception as exc:  # noqa: BLE001
-        raise RuntimeError(f"LLM call failed ({provider}): {exc}") from exc
+    for attempt in range(parse_retries + 1):
+        try:
+            raw = _dispatch_chat(system, prompt_user, cfg)
+        except httpx.ConnectError as exc:
+            raise RuntimeError(
+                f"Cannot reach LLM ({provider}). {describe_setup()} Detail: {exc}"
+            ) from exc
+        except httpx.HTTPStatusError as exc:
+            body = (exc.response.text or "")[:300]
+            log.error("LLM HTTP %s (%s): %s", exc.response.status_code, provider, body)
+            raise RuntimeError(
+                f"LLM HTTP error ({provider}): {exc.response.status_code}. "
+                f"See logs for details. {describe_setup()}"
+            ) from exc
+        except LLMParseError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(f"LLM call failed ({provider}): {exc}") from exc
 
-    try:
-        data = _parse_json_object(raw)
-    except RuntimeError:
-        log.error("LLM JSON parse failure. Raw output (%s chars): %s", len(raw), raw[:2000])
-        raise
+        try:
+            data = _parse_json_object(raw)
+        except (LLMParseError, json.JSONDecodeError, ValueError) as exc:
+            last_parse_exc = exc
+            log.error(
+                "LLM JSON parse failure (attempt %s/%s). Raw (%s chars): %s",
+                attempt + 1,
+                parse_retries + 1,
+                len(raw),
+                raw[:2000],
+            )
+            if attempt >= parse_retries:
+                break
+            prompt_user = _repair_user_prompt(raw, str(exc))
+            continue
 
-    if not _looks_like_recs(data):
-        log.error(
-            "LLM returned JSON without recs schema. keys=%s raw=%s",
-            list(data.keys()),
-            raw[:2000],
-        )
-        raise RuntimeError(
-            "LLM returned JSON that is not trade/waiver recommendations "
-            f"(keys={list(data.keys())}). Raw preview: {raw[:400]}"
-        )
-    return data, raw
+        if not _looks_like_recs(data):
+            msg = (
+                "LLM returned JSON that is not trade/waiver recommendations "
+                f"(keys={list(data.keys())}). Raw preview: {raw[:400]}"
+            )
+            log.error(
+                "LLM returned JSON without recs schema. keys=%s raw=%s",
+                list(data.keys()),
+                raw[:2000],
+            )
+            last_parse_exc = LLMParseError(msg, raw=raw)
+            if attempt >= parse_retries:
+                raise last_parse_exc
+            prompt_user = _repair_user_prompt(raw, msg)
+            continue
+
+        return data, raw
+
+    err_msg = str(last_parse_exc) if last_parse_exc else "LLM did not return valid JSON"
+    raise LLMParseError(err_msg, raw=raw)
