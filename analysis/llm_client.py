@@ -146,6 +146,25 @@ def llm_config() -> dict[str, str]:
     }
 
 
+def active_provider_model() -> tuple[str, str]:
+    """Return (display name, model id) for the currently configured LLM."""
+    cfg = llm_config()
+    provider = cfg["provider"]
+    if provider == "openai":
+        return "OpenAI", cfg["openai_model"]
+    if provider == "anthropic":
+        return "Anthropic", cfg["anthropic_model"]
+    if provider == "ollama":
+        return "Ollama", cfg["ollama_model"]
+    return "Gemini", cfg["gemini_model"]
+
+
+def generate_action_label() -> str:
+    """UI heading for generate, e.g. 'Generate with OpenAI · gpt-5.6-terra'."""
+    name, model = active_provider_model()
+    return f"Generate with {name} · {model}"
+
+
 def describe_setup() -> str:
     cfg = llm_config()
     provider = cfg["provider"]

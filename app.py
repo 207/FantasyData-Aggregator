@@ -38,7 +38,12 @@ from analysis import recommendations as recommendations_mod
 from analysis import trade_finder as trade_finder_mod
 from analysis import waiver_finder as waiver_finder_mod
 from analysis import weakness as weakness_mod
-from analysis.llm_client import describe_setup, retry_settings
+from analysis.llm_client import (
+    active_provider_model,
+    describe_setup,
+    generate_action_label,
+    retry_settings,
+)
 from analysis.llm_context import (
     build_recommendation_context,
     context_format,
@@ -127,7 +132,7 @@ def _build_export_pack(
     news_items,
     include_start_sit: bool,
 ) -> dict:
-    """Build full + packed LLM context for download/copy without calling Gemini."""
+    """Build full + packed LLM context for download/copy without calling the LLM."""
     context = build_recommendation_context(
         team_name=team_name,
         hunt_positions=hunt_positions,
@@ -191,8 +196,10 @@ def _llm_export_bundle(out: dict, *, team_name: str, week: int | str) -> dict[st
 
 def main() -> None:
     st.title("FantasyAnalysis")
+    _llm_name, _llm_model = active_provider_model()
     st.caption(
-        "ESPN league + fused weekly/ROS ranks + news → Gemini trade & waiver ideas."
+        "ESPN league + fused weekly/ROS ranks + news → "
+        f"{_llm_name} ({_llm_model}) trade & waiver ideas."
     )
 
     cfg = load_config()
@@ -474,10 +481,12 @@ def main() -> None:
             st.dataframe(fdf, use_container_width=True, hide_index=True)
 
     with tab_recs:
+        _llm_name, _llm_model = active_provider_model()
         st.markdown(
             "Export fused league context anytime for Claude-in-browser, or generate "
-            "recommendations with **Google Gemini**. Context uses fused weekly + ROS "
-            "skill ranks (no raw multi-source dumps). **Never recommends QB/DST/K trades.**"
+            f"recommendations with **{_llm_name}** (`{_llm_model}`). Context uses fused "
+            "weekly + ROS skill ranks (no raw multi-source dumps). "
+            "**Never recommends QB/DST/K trades.**"
         )
         if not team_names:
             st.info("Load league data first.")
@@ -522,7 +531,7 @@ def main() -> None:
             st.subheader("Export for Claude / paste")
             st.caption(
                 f"Packed **{wire.upper()}** context (fused skill ranks RB/WR/TE/QB; "
-                "DST/K + raw multi-source dumps omitted). No Gemini call required. "
+                "DST/K + raw multi-source dumps omitted). No LLM call required. "
                 f"≈ JSON {stats.get('json_chars', '?')} chars "
                 f"(~{stats.get('json_tokens_est', '?')} tok) vs TOON {stats.get('toon_chars', '?')} chars "
                 f"(~{stats.get('toon_tokens_est', '?')} tok; "
@@ -585,7 +594,9 @@ def main() -> None:
                     st.caption(f"{len(sent):,} chars (packed JSON)")
 
             st.divider()
-            st.subheader("Generate with Gemini")
+            _gen_label = generate_action_label()
+            _llm_name, _ = active_provider_model()
+            st.subheader(_gen_label)
             _retry_max, _retry_base = retry_settings()
             st.caption(
                 f"{describe_setup()} Auto-retries on high demand "
@@ -594,7 +605,7 @@ def main() -> None:
             if st.button("Generate recommendations", type="primary"):
                 try:
                     with st.spinner(
-                        "Calling Gemini… (retries with backoff if busy; "
+                        f"Calling {_llm_name}… (retries with backoff if busy; "
                         "re-asks for valid JSON if parse fails)"
                     ):
                         gen_out = generate_recommendations(

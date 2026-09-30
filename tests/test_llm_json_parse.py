@@ -7,7 +7,9 @@ import pytest
 from analysis.llm_client import (
     LLMParseError,
     _parse_json_object,
+    active_provider_model,
     complete_json,
+    generate_action_label,
 )
 
 
@@ -122,3 +124,17 @@ def test_complete_json_raises_parse_error_with_raw(monkeypatch):
     with pytest.raises(LLMParseError) as ei:
         complete_json("sys", "user")
     assert ei.value.raw == "{broken"
+
+
+def test_generate_action_label_follows_openai_env(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "openai")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-5.6-terra")
+    assert active_provider_model() == ("OpenAI", "gpt-5.6-terra")
+    assert generate_action_label() == "Generate with OpenAI · gpt-5.6-terra"
+
+
+def test_generate_action_label_follows_gemini_env(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-3.8-flash")
+    assert active_provider_model() == ("Gemini", "gemini-3.8-flash")
+    assert generate_action_label() == "Generate with Gemini · gemini-3.8-flash"
