@@ -41,28 +41,32 @@ lsof -nP -iTCP:3847 -sTCP:LISTEN
 pkill -f 'streamlit run app.py'   # only if you intend to stop FantasyAnalysis
 ```
 
-## Google Gemini (default LLM)
+## LLM providers
 
-1. Open [Google AI Studio](https://aistudio.google.com/apikey) → **Get API key** → create a key (free tier).
-2. Put it in `config/.env`:
+**Preferred: OpenAI** (your API key + credits). Put this in `config/.env`:
+
+```bash
+LLM_PROVIDER=openai
+OPENAI_API_KEY=sk-...
+OPENAI_MODEL=gpt-4.1-mini
+```
+
+**Fallback: Google Gemini** (free tier). Keep or set:
 
 ```bash
 LLM_PROVIDER=gemini
 GEMINI_API_KEY=your_key_here
 # or: GOOGLE_API_KEY=your_key_here
 GEMINI_MODEL=gemini-3.8-flash   # best free-tier Flash; lite: gemini-3.5-flash-lite
-LLM_CONTEXT_FORMAT=toon         # toon (default) | json
-FUSION_METHOD=rrf
-FUSION_RRF_K=60
 ```
 
-3. In the app: **Refresh Data** → **LLM recommendations** → **Generate recommendations**.
+Shared knobs: `LLM_CONTEXT_FORMAT=toon` (default) | `json`, plus optional `FUSION_METHOD=rrf` / `FUSION_RRF_K=60`.
 
-The UI sends a **TOON** pack with **fused** weekly + ROS skill ranks (not raw FantasyPros/Sleeper dumps), plus league/flags/news. Use **Download full context JSON** for Claude-in-browser, or **Download packed TOON**. If the key is missing, the app shows setup instructions and still lets you export context.
+In the app: **Refresh Data** → **LLM recommendations** → **Generate recommendations**.
 
-### Optional other providers
+The UI sends a **TOON** pack with **fused** weekly + ROS skill ranks (not raw FantasyPros/Sleeper dumps), plus league/flags/news. Use **Download full context JSON** for Claude-in-browser, or **Download packed TOON**. If the active provider key is missing, the app shows setup instructions and still lets you export context.
 
-Set `LLM_PROVIDER=openai` or `anthropic` with your own API keys. No Cursor keys are used.
+Optional: `LLM_PROVIDER=anthropic` with `ANTHROPIC_API_KEY`. No Cursor keys are used.
 
 ## ESPN (optional)
 

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-"""LLM backends: Google Gemini (default), optional OpenAI / Anthropic via user API keys.
+"""LLM backends: OpenAI (when keyed), Google Gemini fallback, optional Anthropic.
 
-Ollama has been removed as a default path. Set LLM_PROVIDER=ollama only if you
-intentionally keep a gated local path; Gemini free tier is the supported default.
+Set LLM_PROVIDER=openai with OPENAI_API_KEY for the preferred path.
+LLM_PROVIDER=gemini (default if unset) keeps the free-tier Gemini fallback.
+Ollama remains a gated legacy path only when LLM_PROVIDER=ollama.
 """
 
 import json
@@ -134,7 +135,7 @@ def llm_config() -> dict[str, str]:
         "gemini_model": (os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL) or DEFAULT_GEMINI_MODEL).strip(),
         "context_format": (os.getenv("LLM_CONTEXT_FORMAT", "toon") or "toon").strip().lower(),
         "openai_api_key": (os.getenv("OPENAI_API_KEY") or "").strip(),
-        "openai_model": (os.getenv("OPENAI_MODEL", "gpt-4o-mini") or "gpt-4o-mini").strip(),
+        "openai_model": (os.getenv("OPENAI_MODEL", "gpt-4.1-mini") or "gpt-4.1-mini").strip(),
         "anthropic_api_key": (os.getenv("ANTHROPIC_API_KEY") or "").strip(),
         "anthropic_model": (os.getenv("ANTHROPIC_MODEL", "claude-3-5-haiku-latest") or "").strip(),
         # Gated legacy — not documented as the default path.
