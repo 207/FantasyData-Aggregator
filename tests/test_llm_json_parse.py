@@ -6,6 +6,7 @@ import pytest
 
 from analysis.llm_client import (
     LLMParseError,
+    _openai_omits_temperature,
     _parse_json_object,
     active_provider_model,
     complete_json,
@@ -138,3 +139,11 @@ def test_generate_action_label_follows_gemini_env(monkeypatch):
     monkeypatch.setenv("GEMINI_MODEL", "gemini-3.8-flash")
     assert active_provider_model() == ("Gemini", "gemini-3.8-flash")
     assert generate_action_label() == "Generate with Gemini · gemini-3.8-flash"
+
+
+def test_openai_omits_temperature_for_reasoning_models():
+    assert _openai_omits_temperature("gpt-5.6-terra") is True
+    assert _openai_omits_temperature("gpt-5-mini") is True
+    assert _openai_omits_temperature("o3-mini") is True
+    assert _openai_omits_temperature("gpt-5-chat-latest") is False
+    assert _openai_omits_temperature("gpt-4.1-mini") is False

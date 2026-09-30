@@ -271,6 +271,14 @@ def _ollama_chat(system: str, user: str, cfg: dict[str, str]) -> str:
     return msg
 
 
+def _openai_omits_temperature(model: str) -> bool:
+    """GPT-5 reasoning / o-series reject non-default temperature."""
+    m = (model or "").strip().lower()
+    if m.startswith("gpt-5-chat"):
+        return False
+    return m.startswith(("gpt-5", "o1", "o3", "o4"))
+
+
 def _openai_chat(system: str, user: str, cfg: dict[str, str]) -> str:
     if not cfg["openai_api_key"]:
         raise RuntimeError("OPENAI_API_KEY is not set in config/.env")
@@ -279,15 +287,18 @@ def _openai_chat(system: str, user: str, cfg: dict[str, str]) -> str:
         "Authorization": f"Bearer {cfg['openai_api_key']}",
         "Content-Type": "application/json",
     }
-    payload = {
-        "model": cfg["openai_model"],
+    model = cfg["openai_model"]
+    payload: dict[str, Any] = {
+        "model": model,
         "response_format": {"type": "json_object"},
-        "temperature": 0.3,
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
     }
+    # Reasoning GPT-5 / o-series only allow the default temperature (1).
+    if not _openai_omits_temperature(model):
+        payload["temperature"] = 0.3
     with httpx.Client(timeout=120.0) as client:
         resp = client.post(url, headers=headers, json=payload)
         resp.raise_for_status()
@@ -518,9 +529,16 @@ def complete_json(system: str, user: str) -> tuple[dict[str, Any], str]:
         except httpx.HTTPStatusError as exc:
             body = (exc.response.text or "")[:300]
             log.error("LLM HTTP %s (%s): %s", exc.response.status_code, provider, body)
+            detail = body
+            try:
+                err = exc.response.json().get("error") or {}
+                if isinstance(err, dict) and err.get("message"):
+                    detail = str(err["message"])
+            except Exception:  # noqa: BLE001 — fall back to raw body
+                pass
             raise RuntimeError(
-                f"LLM HTTP error ({provider}): {exc.response.status_code}. "
-                f"See logs for details. {describe_setup()}"
+                f"LLM HTTP error ({provider}): {exc.response.status_code} — {detail} "
+                f"{describe_setup()}"
             ) from exc
         except LLMParseError:
             raise
